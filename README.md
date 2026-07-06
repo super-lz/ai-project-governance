@@ -1,6 +1,6 @@
-# AI Project Governance
+# AI 项目治理模板
 
-一套可复制到项目仓库里的 AI 工程化治理模板。
+一套可复制到项目仓库里的 AI 工程化治理模板，用来把 AI 协作中的长期依据收敛到少数稳定文件。
 
 它把 AI 协作中的长期依据收敛到三大稳定来源：`docs/spec/` 负责主实现规格，代码负责真实实现，Git 历史负责追溯变更；根目录 `AGENTS.md` 负责约束 agent 如何使用这些来源。
 
@@ -15,6 +15,7 @@
 ## 目录
 
 ```text
+README.md
 template/
   AGENTS.md
   docs/
@@ -24,12 +25,45 @@ template/
       main-spec.md
     appendix/
       README.md
+skills/
+  init-ai-project/
+    SKILL.md
+    scripts/
+      init_ai_project.py
+    assets/
+      ai-project-governance-template/
 ```
 
-## 使用
+## 推荐使用方式
+
+优先使用 `skills/init-ai-project/` 里的 skill 初始化目标项目。它会先分析目标项目中缺失、相同或冲突的治理文件，默认不覆盖已有文件。
+
+```bash
+python3 skills/init-ai-project/scripts/init_ai_project.py --target <目标项目路径>
+```
+
+确认只需要写入缺失文件后再执行：
+
+```bash
+python3 skills/init-ai-project/scripts/init_ai_project.py --target <目标项目路径> --apply
+```
+
+若目标项目已有 `AGENTS.md` 或 `docs/` 规范文件，脚本会报告冲突和融合建议，不会自动覆盖。
+
+## 手动使用方式
 
 1. 将 `template/AGENTS.md` 和 `template/docs/` 复制到目标项目根目录。
 2. 按项目情况修改 `docs/spec/main-spec.md`，必要时重命名为具体业务规格。
 3. 后续让 AI 按项目内 `AGENTS.md` 工作。
 
 具体执行流程、文档维护规则和规格边界都在模板文件中定义。
+
+## 本机 skill 安装
+
+仓库内 `skills/init-ai-project/` 是源码位置。需要让 Codex 本机自动发现时，将该目录同步到：
+
+```text
+~/.codex/skills/init-ai-project/
+```
+
+后续修改先更新仓库内源码，再同步到本机安装副本。
