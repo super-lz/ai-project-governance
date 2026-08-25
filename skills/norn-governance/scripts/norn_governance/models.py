@@ -187,10 +187,7 @@ class PlannedAction:
             _require_sha256(self.output_sha256, "output_sha256", optional=False)
         elif self.output_sha256 is not None:
             raise ValueError(f"{self.kind.value} action must not have output_sha256")
-        if self.kind is ActionKind.CONFLICT:
-            if not self.allowed_resolutions:
-                raise ValueError("conflict action requires allowed_resolutions")
-        elif self.allowed_resolutions:
+        if self.kind is not ActionKind.CONFLICT and self.allowed_resolutions:
             raise ValueError("allowed_resolutions require conflict action")
         if len(set(self.allowed_resolutions)) != len(self.allowed_resolutions):
             raise ValueError("allowed_resolutions must be unique")

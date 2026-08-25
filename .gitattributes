@@ -1,0 +1,2 @@
+# Preserve byte-exact historical templates used for legacy SHA-256 recognition.
+skills/norn-governance/assets/legacy-templates/** whitespace=-trailing-space

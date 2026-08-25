@@ -42,6 +42,10 @@ def asset_template_root() -> Path:
     return skill_root() / "assets" / "ai-project-governance-template"
 
 
+def legacy_template_root(version: int = 0) -> Path:
+    return skill_root() / "assets" / "legacy-templates" / str(version)
+
+
 def template_manifest(template_root: Path) -> NornManifest:
     records: dict[str, ManagedFileRecord] = {}
     for relative_path, (ownership, expected_blocks) in MANAGED_PATHS.items():
