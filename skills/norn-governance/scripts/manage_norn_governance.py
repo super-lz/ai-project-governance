@@ -1,307 +1,389 @@
 #!/usr/bin/env python3
-"""从本 skill 的内置模板初始化 AI 项目治理文件。"""
+"""Norn Governance 的确定性分析、冲突解析和执行入口。"""
 
 from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sys
-from dataclasses import dataclass, replace
+import tempfile
+from collections import Counter
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
-from norn_governance.templates import (
-    MANIFEST_PATH,
-    manifest_bytes,
-    template_manifest,
+from norn_governance.analyzer import analyze_governance, resolve_conflicts
+from norn_governance.executor import ApplyResult, apply_plan
+from norn_governance.models import (
+    ActionKind,
+    ConflictResolution,
+    GovernancePlan,
+    load_plan,
+    write_plan,
 )
 
 
-TEMPLATE_FILES = [
-    "AGENTS.md",
-    MANIFEST_PATH,
-    "norn-governance/AGENTS.md",
-    "norn-governance/spec/AGENTS.md",
-    "norn-governance/spec/main-spec.md",
-    "norn-governance/appendix/README.md",
-]
-
-LEGACY_PATHS = {
-    "norn-governance/AGENTS.md": "docs/AGENTS.md",
-    "norn-governance/spec/AGENTS.md": "docs/spec/AGENTS.md",
-    "norn-governance/spec/main-spec.md": "docs/spec/main-spec.md",
-    "norn-governance/appendix/README.md": "docs/appendix/README.md",
-}
+BRAND = "Norn Governance"
 
 
-@dataclass(frozen=True)
-class FileResult:
-    path: str
-    status: str
-    action: str
-    legacy_path: str | None = None
-    fusion_guidance: str | None = None
-    template_headings: list[str] | None = None
-    target_headings: list[str] | None = None
-
-    def to_dict(self) -> dict:
-        payload: dict = {
-            "path": self.path,
-            "status": self.status,
-            "action": self.action,
-        }
-        if self.fusion_guidance:
-            payload["fusion_guidance"] = self.fusion_guidance
-        if self.legacy_path:
-            payload["legacy_path"] = self.legacy_path
-        if self.template_headings is not None:
-            payload["template_headings"] = self.template_headings
-        if self.target_headings is not None:
-            payload["target_headings"] = self.target_headings
-        return payload
+def _add_common_report_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--report-json",
+        action="store_true",
+        help="输出机器可读 JSON 报告。",
+    )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="分析或初始化 AI 项目治理文件。"
+        description=f"{BRAND}：安全初始化、迁移或升级项目 AI 协作治理。"
     )
-    parser.add_argument(
-        "--target",
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    analyze = commands.add_parser(
+        "analyze",
+        help="只读分析项目状态并生成带指纹的临时执行计划。",
+    )
+    analyze.add_argument("--target", required=True, help="目标仓库根目录。")
+    analyze.add_argument(
+        "--artifact-dir",
+        help="机器计划和渲染产物目录；必须位于目标仓库之外。",
+    )
+    _add_common_report_argument(analyze)
+
+    resolve = commands.add_parser(
+        "resolve",
+        help="将明确的冲突选择绑定到已有计划。",
+    )
+    resolve.add_argument("--target", required=True, help="目标仓库根目录。")
+    resolve.add_argument("--plan", required=True, help="待解析的 plan.json。")
+    resolve.add_argument(
+        "--resolutions",
         required=True,
-        help="要分析或初始化的目标仓库根目录。",
+        help="包含 resolutions 数组的 JSON 文件。",
     )
-    parser.add_argument(
-        "--apply",
-        action="store_true",
-        help="复制缺失文件。已有文件永远不会被覆盖。",
+    _add_common_report_argument(resolve)
+
+    apply = commands.add_parser(
+        "apply",
+        help="重新验证计划、项目指纹和渲染产物后执行。",
     )
-    parser.add_argument(
-        "--report-json",
-        action="store_true",
-        help="只输出 JSON 报告。",
-    )
+    apply.add_argument("--target", required=True, help="目标仓库根目录。")
+    apply.add_argument("--plan", required=True, help="已确认且无冲突的 plan.json。")
+    _add_common_report_argument(apply)
     return parser.parse_args()
 
 
-def template_root() -> Path:
-    return Path(__file__).resolve().parents[1] / "assets" / "ai-project-governance-template"
-
-
-def guidance_for(path: str) -> str:
-    if path == "AGENTS.md":
-        return (
-            "用户确认后，将模板中的项目总指挥职责、第一性原则工作流、"
-            "实现规格维护规则和文档治理规则融合到现有根目录 AGENTS.md。"
-        )
-    if path.startswith("norn-governance/spec/"):
-        return (
-            "保留目标项目已有实现规格内容；用户确认后，融合模板中关于主规格权威性、"
-            "规格变更确认和禁止记录开发流水的规则。"
-        )
-    if path == "norn-governance/AGENTS.md":
-        return (
-            "保留目标项目已有治理分类；用户确认后，融合模板中 spec/plans/appendix "
-            "职责和长期、临时材料的边界。"
-        )
-    return (
-        "除非用户确认融合，否则保留目标文件；只补充附录材料不作为权威实现依据的治理规则。"
-    )
-
-
-def legacy_guidance_for(path: str, legacy_path: str) -> str:
-    return (
-        f"检测到旧版 Norn 治理路径 {legacy_path}。不要让它与 {path} 形成两套依据；"
-        "先分析旧文件是否属于治理模板，再由用户确认迁移，且不要移动目标项目的其他 docs 内容。"
-    )
-
-
-def markdown_headings(path: Path) -> list[str]:
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except UnicodeDecodeError:
-        return []
-    headings: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped.startswith("#"):
-            continue
-        title = stripped.lstrip("#").strip()
-        if title:
-            headings.append(title)
-    return headings
-
-
-def analyze_file(target_root: Path, source_root: Path, relative_path: str) -> FileResult:
-    source = source_root / relative_path
-    target = target_root / relative_path
-
-    if not source.is_file():
-        raise FileNotFoundError(f"模板文件缺失：{source}")
-
-    legacy_path = LEGACY_PATHS.get(relative_path)
-    if legacy_path:
-        legacy_target = target_root / legacy_path
-        if legacy_target.exists():
-            return FileResult(
-                path=relative_path,
-                status="conflict",
-                action="skip",
-                legacy_path=legacy_path,
-                fusion_guidance=legacy_guidance_for(relative_path, legacy_path),
-                template_headings=markdown_headings(source),
-                target_headings=(
-                    markdown_headings(legacy_target) if legacy_target.is_file() else []
-                ),
-            )
-
+def _canonical_target(raw_target: str) -> Path:
+    target = Path(raw_target).expanduser().resolve()
     if not target.exists():
-        return FileResult(
-            path=relative_path,
-            status="missing",
-            action="copy" if target_root.exists() else "none",
+        raise ValueError(f"target does not exist: {target}")
+    if not target.is_dir():
+        raise ValueError(f"target is not a directory: {target}")
+    return target
+
+
+def _require_plan_target(plan: GovernancePlan, target: Path) -> None:
+    if Path(plan.target_root) != target:
+        raise ValueError(
+            f"target does not match plan: target={target}, plan={plan.target_root}"
         )
 
-    if not target.is_file():
-        return FileResult(
-            path=relative_path,
-            status="conflict",
-            action="skip",
-            fusion_guidance=f"目标路径存在但不是文件。{guidance_for(relative_path)}",
-            template_headings=markdown_headings(source),
-            target_headings=[],
+
+def _plan_sections(plan: GovernancePlan) -> dict[str, list[dict[str, Any]]]:
+    ownership_evidence: list[dict[str, Any]] = []
+    relocations: list[dict[str, Any]] = []
+    rule_upgrades: list[dict[str, Any]] = []
+    conflicts: list[dict[str, Any]] = []
+    deletions: list[dict[str, Any]] = []
+    risks: list[dict[str, Any]] = []
+    verification: list[dict[str, Any]] = []
+
+    for action in plan.actions:
+        ownership_evidence.append(
+            {
+                "action_id": action.action_id,
+                "target_path": action.target_path,
+                "ownership": action.ownership.value,
+                "evidence": list(action.evidence),
+            }
+        )
+        if action.source_path is not None:
+            relocations.append(
+                {
+                    "action_id": action.action_id,
+                    "source_path": action.source_path,
+                    "target_path": action.target_path,
+                    "kind": action.kind.value,
+                }
+            )
+            deletions.append(
+                {
+                    "action_id": action.action_id,
+                    "path": action.source_path,
+                    "condition": "canonical target is written and verified",
+                }
+            )
+        if action.kind in {ActionKind.CREATE, ActionKind.MERGE, ActionKind.MOVE}:
+            rule_upgrades.append(
+                {
+                    "action_id": action.action_id,
+                    "target_path": action.target_path,
+                    "kind": action.kind.value,
+                    "reason": action.reason,
+                }
+            )
+        if action.kind is ActionKind.CONFLICT:
+            conflicts.append(
+                {
+                    "action_id": action.action_id,
+                    "target_path": action.target_path,
+                    "reason": action.reason,
+                    "allowed_resolutions": [
+                        choice.value for choice in action.allowed_resolutions
+                    ],
+                }
+            )
+        if action.kind is ActionKind.DELETE:
+            deletions.append(
+                {
+                    "action_id": action.action_id,
+                    "path": action.target_path,
+                    "condition": action.reason,
+                }
+            )
+        if action.kind is not ActionKind.KEEP:
+            risks.append(
+                {
+                    "action_id": action.action_id,
+                    "target_path": action.target_path,
+                    "risk": action.risk,
+                }
+            )
+        verification.append(
+            {
+                "action_id": action.action_id,
+                "target_path": action.target_path,
+                "checks": list(action.verification),
+            }
         )
 
-    if target.read_bytes() == source.read_bytes():
-        return FileResult(path=relative_path, status="same", action="none")
-
-    return FileResult(
-        path=relative_path,
-        status="conflict",
-        action="skip",
-        fusion_guidance=guidance_for(relative_path),
-        template_headings=markdown_headings(source),
-        target_headings=markdown_headings(target),
-    )
-
-
-def copy_missing(target_root: Path, source_root: Path, results: list[FileResult]) -> list[str]:
-    written: list[str] = []
-    for result in results:
-        if result.status != "missing":
-            continue
-        source = source_root / result.path
-        target = target_root / result.path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
-        written.append(result.path)
-    return written
-
-
-def block_manifest_until_legacy_conflicts_are_resolved(
-    results: list[FileResult],
-) -> list[FileResult]:
-    has_legacy_conflict = any(
-        result.status == "conflict" and result.legacy_path for result in results
-    )
-    if not has_legacy_conflict:
-        return results
-    return [
-        replace(
-            result,
-            status="conflict",
-            action="skip",
-            fusion_guidance=(
-                "旧版 Norn 路径尚未迁移，不能写入 .norn.json 成功标记。"
-            ),
-        )
-        if result.path == MANIFEST_PATH and result.status == "missing"
-        else result
-        for result in results
-    ]
-
-
-def build_report(target_root: Path, apply: bool, results: list[FileResult], written: list[str]) -> dict:
-    counts = {"missing": 0, "same": 0, "conflict": 0}
-    for result in results:
-        counts[result.status] += 1
     return {
-        "target": str(target_root),
-        "apply": apply,
-        "counts": counts,
-        "written": written,
-        "files": [result.to_dict() for result in results],
+        "ownership_evidence": ownership_evidence,
+        "relocations": relocations,
+        "rule_upgrades": rule_upgrades,
+        "conflicts": conflicts,
+        "deletions": deletions,
+        "risks": risks,
+        "verification": verification,
     }
 
 
-def print_human_report(report: dict) -> None:
-    mode = "apply" if report["apply"] else "dry-run"
-    print(f"AI 项目治理初始化报告（{mode}）")
-    print(f"目标目录：{report['target']}")
+def _plan_report(
+    command: str,
+    plan: GovernancePlan,
+    plan_path: Path,
+) -> dict[str, Any]:
+    action_counts = Counter(action.kind.value for action in plan.actions)
+    return {
+        "brand": BRAND,
+        "command": command,
+        "target": plan.target_root,
+        "project_state": plan.project_state.value,
+        "template_version": plan.template_version,
+        "plan_path": str(plan_path),
+        "plan_sha256": plan.plan_sha256,
+        "executable": not plan.conflicts
+        and all(action.kind is not ActionKind.CONFLICT for action in plan.actions),
+        "summary": {
+            "total_actions": len(plan.actions),
+            "action_counts": dict(sorted(action_counts.items())),
+        },
+        "actions": [action.to_dict() for action in plan.actions],
+        "sections": _plan_sections(plan),
+    }
+
+
+def _verification_dict(result: ApplyResult) -> dict[str, Any]:
+    verification = result.verification
+    return {
+        "state": verification.state.value,
+        "manifest_valid": verification.manifest_valid,
+        "single_spec_source": verification.single_spec_source,
+        "checked_paths": list(verification.checked_paths),
+        "warnings": list(verification.warnings),
+    }
+
+
+def _apply_report(target: Path, plan_path: Path, result: ApplyResult) -> dict[str, Any]:
+    return {
+        "brand": BRAND,
+        "command": "apply",
+        "target": str(target),
+        "plan_path": str(plan_path),
+        "created": list(result.created),
+        "updated": list(result.updated),
+        "removed": list(result.removed),
+        "removed_directories": list(result.removed_directories),
+        "verification": _verification_dict(result),
+    }
+
+
+def _load_resolutions(path: Path) -> tuple[ConflictResolution, ...]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid resolutions file: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise ValueError("resolutions file must be an object")
+    raw_resolutions = payload.get("resolutions")
+    if not isinstance(raw_resolutions, list):
+        raise ValueError("resolutions must be an array")
+    resolutions: list[ConflictResolution] = []
+    for index, raw_resolution in enumerate(raw_resolutions):
+        if not isinstance(raw_resolution, Mapping):
+            raise ValueError(f"resolutions[{index}] must be an object")
+        resolutions.append(ConflictResolution.from_dict(raw_resolution))
+    return tuple(resolutions)
+
+
+def _print_items(items: list[dict[str, Any]], formatter) -> None:
+    if not items:
+        print("  - 无")
+        return
+    for item in items:
+        print(f"  - {formatter(item)}")
+
+
+def print_human_plan_report(report: Mapping[str, Any]) -> None:
+    sections = report["sections"]
+    print(f"{BRAND} 分析报告")
+    print(f"目标：{report['target']}")
+    print(f"计划：{report['plan_path']}")
+    print("\n状态")
     print(
-        "统计："
-        f"missing={report['counts']['missing']}, "
-        f"same={report['counts']['same']}, "
-        f"conflict={report['counts']['conflict']}"
+        f"  - {report['project_state']}；"
+        f"{'可执行' if report['executable'] else '需要先解决冲突'}"
+    )
+    print("\n归属证据")
+    _print_items(
+        sections["ownership_evidence"],
+        lambda item: (
+            f"{item['target_path']} [{item['ownership']}]："
+            + "；".join(item["evidence"])
+        ),
+    )
+    print("\n路径迁移")
+    _print_items(
+        sections["relocations"],
+        lambda item: f"{item['source_path']} -> {item['target_path']} ({item['kind']})",
+    )
+    print("\n规则升级")
+    _print_items(
+        sections["rule_upgrades"],
+        lambda item: f"{item['target_path']} ({item['kind']})：{item['reason']}",
+    )
+    print("\n冲突")
+    _print_items(
+        sections["conflicts"],
+        lambda item: (
+            f"{item['target_path']}：{item['reason']}；"
+            f"可选={','.join(item['allowed_resolutions']) or '需外部修正后重析'}"
+        ),
+    )
+    print("\n删除")
+    _print_items(
+        sections["deletions"],
+        lambda item: f"{item['path']}：{item['condition']}",
+    )
+    print("\n风险")
+    _print_items(
+        sections["risks"],
+        lambda item: f"{item['target_path']}：{item['risk']}",
+    )
+    print("\n验证")
+    _print_items(
+        sections["verification"],
+        lambda item: f"{item['target_path']}：{'；'.join(item['checks'])}",
     )
 
-    if report["written"]:
-        print("\n已写入文件：")
-        for path in report["written"]:
-            print(f"  - {path}")
 
-    print("\n文件结果：")
-    for item in report["files"]:
-        print(f"  - {item['path']}: {item['status']} ({item['action']})")
-        if "target_headings" in item:
-            target_headings = ", ".join(item["target_headings"]) or "（无）"
-            template_headings = ", ".join(item["template_headings"]) or "（无）"
-            print(f"    目标标题：{target_headings}")
-            print(f"    模板标题：{template_headings}")
-        if "legacy_path" in item:
-            print(f"    旧版路径：{item['legacy_path']}")
-        if "fusion_guidance" in item:
-            print(f"    融合建议：{item['fusion_guidance']}")
+def print_human_apply_report(report: Mapping[str, Any]) -> None:
+    print(f"{BRAND} 执行报告")
+    print(f"目标：{report['target']}")
+    for heading, key in (
+        ("已创建", "created"),
+        ("已更新", "updated"),
+        ("已删除文件", "removed"),
+        ("已删除空目录", "removed_directories"),
+    ):
+        print(f"\n{heading}")
+        values = report[key]
+        if values:
+            for value in values:
+                print(f"  - {value}")
+        else:
+            print("  - 无")
+    verification = report["verification"]
+    print("\n验证")
+    print(f"  - 状态：{verification['state']}")
+    print(f"  - manifest 有效：{verification['manifest_valid']}")
+    print(f"  - 单一规格源：{verification['single_spec_source']}")
+    for warning in verification["warnings"]:
+        print(f"  - 警告：{warning}")
 
-    if report["counts"]["conflict"]:
-        print(
-            "\n检测到冲突，已跳过覆盖。编辑已有治理文件前，先查看融合建议并询问用户。"
-        )
-    elif not report["apply"]:
-        print("\n当前只是 dry-run。需要复制缺失文件时，请重新执行并加上 --apply。")
+
+def _emit(report: Mapping[str, Any], report_json: bool) -> None:
+    if report_json:
+        print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+    elif report["command"] == "apply":
+        print_human_apply_report(report)
+    else:
+        print_human_plan_report(report)
+
+
+def _run_analyze(args: argparse.Namespace, target: Path) -> dict[str, Any]:
+    artifact_root = (
+        Path(args.artifact_dir).expanduser().resolve()
+        if args.artifact_dir
+        else Path(tempfile.mkdtemp(prefix="norn-governance-"))
+    )
+    plan = analyze_governance(target, artifact_root)
+    return _plan_report("analyze", plan, artifact_root / "plan.json")
+
+
+def _run_resolve(args: argparse.Namespace, target: Path) -> dict[str, Any]:
+    plan_path = Path(args.plan).expanduser().resolve()
+    plan = load_plan(plan_path)
+    _require_plan_target(plan, target)
+    resolutions = _load_resolutions(Path(args.resolutions).expanduser().resolve())
+    resolved = resolve_conflicts(plan, resolutions, plan_path.parent)
+    resolved_path = write_plan(resolved, plan_path.parent)
+    return _plan_report("resolve", resolved, resolved_path)
+
+
+def _run_apply(args: argparse.Namespace, target: Path) -> dict[str, Any]:
+    plan_path = Path(args.plan).expanduser().resolve()
+    plan = load_plan(plan_path)
+    _require_plan_target(plan, target)
+    result = apply_plan(plan_path)
+    return _apply_report(target, plan_path, result)
 
 
 def main() -> int:
     args = parse_args()
-    target_root = Path(args.target).expanduser().resolve()
-    source_root = template_root()
-
-    if not target_root.exists():
-        print(f"目标路径不存在：{target_root}", file=sys.stderr)
-        return 2
-    if not target_root.is_dir():
-        print(f"目标路径不是目录：{target_root}", file=sys.stderr)
-        return 2
-    if not source_root.is_dir():
-        print(f"模板目录不存在：{source_root}", file=sys.stderr)
-        return 2
-
     try:
-        expected_manifest = manifest_bytes(template_manifest(source_root))
-        if (source_root / MANIFEST_PATH).read_bytes() != expected_manifest:
-            raise ValueError("模板 .norn.json 与实际受管区块不一致")
-        results = block_manifest_until_legacy_conflicts_are_resolved(
-            [analyze_file(target_root, source_root, path) for path in TEMPLATE_FILES]
-        )
-        written = copy_missing(target_root, source_root, results) if args.apply else []
-    except (OSError, ValueError) as exc:
-        print(f"初始化失败：{exc}", file=sys.stderr)
+        target = _canonical_target(args.target)
+        if args.command == "analyze":
+            report = _run_analyze(args, target)
+        elif args.command == "resolve":
+            report = _run_resolve(args, target)
+        else:
+            report = _run_apply(args, target)
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"{BRAND} 失败：{exc}", file=sys.stderr)
         return 1
-
-    report = build_report(target_root, args.apply, results, written)
-    if args.report_json:
-        print(json.dumps(report, ensure_ascii=False, indent=2))
-    else:
-        print_human_report(report)
+    _emit(report, args.report_json)
     return 0
 
 

@@ -3,65 +3,36 @@ name: norn-governance
 description: 初始化、迁移或升级项目中的 Norn AI 协作治理，安全处理旧 docs 治理路径和受管区块冲突。适用于用户要求建立、迁移或更新 Norn 治理；不适用于与 Norn 无关的普通项目文档编辑。
 ---
 
-# 初始化 Norn 项目治理
+# Norn Governance
 
-## 概览
+为项目建立并维护唯一的 Norn AI 治理入口。用户只需说明目标；内部脚本负责只读分析、生成带指纹的机器计划，并在确认后安全执行。不要要求用户运行脚本。
 
-使用本 skill 将 Norn AI 项目治理模板初始化到目标仓库。它保留根 `AGENTS.md` 作为标准入口，把规格、按需计划和附录统一放在 `norn-governance/` 命名空间中。首版只管理 `assets/ai-project-governance-template/` 中的固定治理文件；不创建应用代码、不修改 Git 配置、不提交代码，也不初始化 Flutter 专项工具链。
+## 工作流
 
-## 工作流程
+1. 从请求和当前目录判断目标仓库，以及初始化、迁移或升级意图。
+2. 内部运行 `scripts/manage_norn_governance.py analyze --target <repo> --report-json`。分析不得写入目标仓库；机器计划和渲染产物留在系统临时目录。
+3. 根据原始文件核实归属证据。旧路径形成完整证据链时仍需阅读相关文件；`ambiguous`、结构归属或内容冲突不能只信路径名和报告摘要。
+4. 用自然语言汇总状态、逐文件创建或迁移、规则升级、保留内容、删除条件、冲突、风险和验证方式。不要暴露内部命令作为用户操作步骤。
+5. 对无歧义操作取得一次整体确认。归属不明或修改过的受管区块分别询问明确选择，不能把它们藏进整体确认。
+6. 对冲突只采用报告允许的选择：
+   - `keep-current`：仅限已版本化项目中修改过的受管区块；把当前区块确认为新基线。
+   - `adopt-template`：明确舍弃对应治理定制并采用当前模板。
+   - `semantic-merge`：先展示拟融合内容并取得选择，再在机器计划目录内生成 UTF-8 产物和 SHA-256；必须保留正确受管区块与项目内容。
+7. 内部通过 `resolve` 绑定全部选择。执行前确认解析后的计划无 `conflict`，目标仓库与计划一致，并且用户确认对应当前动作摘要。
+8. 内部运行 `apply --target <repo> --plan <plan.json> --report-json`。若计划摘要、路径指纹或产物哈希变化，停止并重新分析；旧确认不可复用。
+9. 验证最终内容、治理路径、`.norn.json`、Git 差异和单一规格源。`norn-governance/spec/main-spec.md` 一旦初始化即归项目所有，升级不得用模板覆盖。
 
-1. 从用户请求或当前工作目录确认目标仓库根目录。
-2. 先执行 dry-run 分析：
+未经用户明确要求，不提交、不推送、不创建分支，也不修改 Git 配置。
 
-```bash
-python3 <skill-dir>/scripts/manage_norn_governance.py --target <target-repo>
-```
+## 边界
 
-3. 查看报告：
-   - `missing`：目标仓库缺少该文件，可以从模板创建。
-   - `same`：目标仓库已有文件且内容与模板一致。
-   - `conflict`：目标仓库已有同名文件，但内容与模板不同。
-   - 包含 `legacy_path` 的 `conflict`：检测到旧版 `docs/` 治理路径，必须先确认迁移，不能直接创建第二套 Norn 规格。
-4. 如果存在冲突，先总结融合方案并询问用户，确认前不要编辑冲突文件。
-5. 如果用户确认写入缺失文件，执行：
+- 只管理根 `AGENTS.md`、`.norn.json` 以及 `norn-governance/` 中固定治理文件。
+- 只迁移确认属于旧 Norn 的四个 `docs/` 文件；项目的其他 `docs/` 内容不移动。
+- 目标内容写入并校验成功前不删除旧源；旧目录仅在完全为空时删除。
+- `main-spec.md` 保留完整业务内容，只替换能精确确认的旧治理路径引用。
+- 不对任意 Markdown 做猜测式融合，不静默覆盖新路径冲突。
+- `norn-governance/plans/` 不属于初始化清单；简单或单会话任务不创建它。
 
-```bash
-python3 <skill-dir>/scripts/manage_norn_governance.py --target <target-repo> --apply
-```
+## 跨会话恢复
 
-## 冲突策略
-
-- 永远不要自动覆盖目标仓库已有文件。
-- 把冲突视为治理规则融合任务，而不是复制任务。
-- 说明发生差异的具体路径；除非用户明确确认融合，否则保留目标项目已有规则。
-- 对 `AGENTS.md`，优先融合模板里的稳定职责：项目总指挥入口、第一性原则、实现规格维护、文档治理。
-- 对 `norn-governance/` 下文件，保留目标项目已确认的规格和治理内容，只补缺失规则。
-- 检测到旧版 `docs/AGENTS.md`、`docs/spec/` 或 `docs/appendix/README.md` 时，先分析这些文件是否确属旧 Norn 模板，再给出逐文件迁移方案；不要移动目标项目的其他 `docs/` 内容。
-- 迁移确认前不要创建对应的新路径；迁移完成后不要长期保留两套权威规格。
-
-## 脚本约定
-
-`scripts/manage_norn_governance.py` 支持：
-
-- `--target <path>`：目标仓库根目录，必填。
-- `--apply`：只复制缺失文件。已有冲突文件永远不会被覆盖。
-- `--report-json`：输出机器可读报告，便于后续自动化能力复用。
-
-脚本使用固定文件清单：
-
-- `AGENTS.md`
-- `norn-governance/AGENTS.md`
-- `norn-governance/spec/AGENTS.md`
-- `norn-governance/spec/main-spec.md`
-- `norn-governance/appendix/README.md`
-
-`norn-governance/plans/` 不在固定文件清单中。只有任务预计跨会话、跨设备、步骤较多或容易中断时，才按根 `AGENTS.md` 和 Norn 治理入口的规则创建计划；完成或取消后删除计划。
-
-## 本机安装
-
-仓库内副本是源码基准。需要让本机 Codex 可用时，将 `skills/norn-governance/` 同步到 `~/.codex/skills/norn-governance/`。后续修改先更新仓库内源码，再同步本机安装副本。
-
-## 后续扩展边界
-
-Flutter 初始化应在 AI 治理初始化稳定后作为独立能力加入。不要在 v1 脚本中提前加入 Flutter 选项；Flutter 项目创建、lint/analyze 配置、pubspec 处理和 build_runner 集成都应作为单独工作流设计，并保留独立分析和用户选择。
+只有用户明确需要暂停、跨会话或跨设备继续时，才读取 [references/recovery-plans.md](references/recovery-plans.md) 并按其中规则创建短期恢复计划。常规初始化、迁移和升级不要加载该 reference，也不要把机器计划写进仓库。

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -10,122 +11,237 @@ from pathlib import Path
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = SKILL_ROOT / "scripts" / "manage_norn_governance.py"
-EXPECTED_FILES = [
+LEGACY_TEMPLATE = SKILL_ROOT / "assets" / "legacy-templates" / "0"
+EXPECTED_FILES = {
     "AGENTS.md",
     "norn-governance/.norn.json",
     "norn-governance/AGENTS.md",
     "norn-governance/spec/AGENTS.md",
     "norn-governance/spec/main-spec.md",
     "norn-governance/appendix/README.md",
-]
-LEGACY_TARGET_FILES = [
-    "norn-governance/AGENTS.md",
-    "norn-governance/spec/AGENTS.md",
-    "norn-governance/spec/main-spec.md",
-    "norn-governance/appendix/README.md",
-]
-LEGACY_FILES = [
-    "docs/AGENTS.md",
-    "docs/spec/AGENTS.md",
-    "docs/spec/main-spec.md",
-    "docs/appendix/README.md",
-]
+}
 
 
-class NornGovernanceTests(unittest.TestCase):
-    def run_script(self, target: Path, *arguments: str) -> dict:
-        completed = subprocess.run(
-            [
-                sys.executable,
-                str(SCRIPT),
-                "--target",
-                str(target),
-                "--report-json",
-                *arguments,
-            ],
+class NornGovernanceCliTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.temporary_directory.name)
+        self.counter = 0
+
+    def tearDown(self) -> None:
+        self.temporary_directory.cleanup()
+
+    def make_target(self) -> Path:
+        self.counter += 1
+        target = self.workspace / f"target-{self.counter}"
+        target.mkdir()
+        return target
+
+    def copy_legacy_template(self) -> Path:
+        target = self.make_target()
+        shutil.copytree(LEGACY_TEMPLATE, target, dirs_exist_ok=True)
+        return target
+
+    def run_cli_raw(self, *arguments: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), *(str(value) for value in arguments)],
             check=False,
             capture_output=True,
             text=True,
         )
+
+    def run_cli_json(self, *arguments: object) -> dict:
+        completed = self.run_cli_raw(*arguments, "--report-json")
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout)
 
-    def test_apply_creates_only_norn_governance_files(self) -> None:
-        """防止初始化器继续把治理文件写进目标项目的 docs/。"""
-        with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory)
+    def analyze(self, target: Path, artifacts: Path | None = None) -> dict:
+        artifacts = artifacts or self.workspace / f"artifacts-{self.counter}"
+        return self.run_cli_json(
+            "analyze",
+            "--target",
+            target,
+            "--artifact-dir",
+            artifacts,
+        )
 
-            dry_run = self.run_script(target)
-            self.assertEqual(dry_run["counts"], {"missing": 6, "same": 0, "conflict": 0})
-            self.assertEqual([item["path"] for item in dry_run["files"]], EXPECTED_FILES)
+    def test_analyze_empty_project_writes_plan_but_not_project_files(self) -> None:
+        target = self.make_target()
+        before = tuple(target.rglob("*"))
 
-            applied = self.run_script(target, "--apply")
-            self.assertEqual(applied["written"], EXPECTED_FILES)
-            for relative_path in EXPECTED_FILES:
-                self.assertTrue((target / relative_path).is_file(), relative_path)
-            self.assertFalse((target / "docs").exists())
-            self.assertFalse((target / "norn-governance" / "plans").exists())
-            manifest = json.loads(
-                (target / "norn-governance/.norn.json").read_text(encoding="utf-8")
-            )
-            self.assertEqual(manifest["schema_version"], 1)
-            self.assertEqual(manifest["template_version"], 1)
-            self.assertEqual(
-                manifest["managed_files"]["norn-governance/spec/main-spec.md"][
-                    "ownership"
-                ],
-                "project",
-            )
-            self.assertNotIn(
-                "norn:managed",
-                (target / "norn-governance/spec/main-spec.md").read_text(
-                    encoding="utf-8"
-                ),
-            )
+        report = self.analyze(target)
 
-            repeated = self.run_script(target)
-            self.assertEqual(repeated["counts"], {"missing": 0, "same": 6, "conflict": 0})
+        self.assertEqual(report["command"], "analyze")
+        self.assertEqual(report["project_state"], "uninitialized")
+        self.assertTrue(report["executable"])
+        self.assertTrue(Path(report["plan_path"]).is_file())
+        self.assertEqual(tuple(target.rglob("*")), before)
+        self.assertEqual(
+            {action["target_path"] for action in report["actions"]},
+            EXPECTED_FILES,
+        )
 
-    def test_apply_does_not_create_duplicate_governance_beside_legacy_files(self) -> None:
-        """防止旧版 docs/ 治理文件和新 Norn 规格同时成为事实源。"""
-        with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory)
-            for relative_path in LEGACY_FILES:
-                legacy_file = target / relative_path
-                legacy_file.parent.mkdir(parents=True, exist_ok=True)
-                legacy_file.write_text(f"# legacy {relative_path}\n", encoding="utf-8")
+    def test_analyze_legacy_project_reports_relocations_without_writes(self) -> None:
+        target = self.copy_legacy_template()
+        before = {
+            path.relative_to(target).as_posix(): path.read_bytes()
+            for path in target.rglob("*")
+            if path.is_file()
+        }
 
-            report = self.run_script(target, "--apply")
-            results = {item["path"]: item for item in report["files"]}
+        report = self.analyze(target)
 
-            self.assertEqual(report["counts"], {"missing": 1, "same": 0, "conflict": 5})
-            self.assertEqual(report["written"], ["AGENTS.md"])
-            self.assertEqual(results["norn-governance/.norn.json"]["status"], "conflict")
-            self.assertFalse((target / "norn-governance/.norn.json").exists())
-            for new_path, legacy_path in zip(LEGACY_TARGET_FILES, LEGACY_FILES, strict=True):
-                self.assertEqual(results[new_path]["status"], "conflict")
-                self.assertEqual(results[new_path]["action"], "skip")
-                self.assertEqual(results[new_path]["legacy_path"], legacy_path)
-                self.assertFalse((target / new_path).exists())
-            self.assertFalse((target / "norn-governance").exists())
+        self.assertEqual(report["project_state"], "legacy")
+        self.assertEqual(
+            {
+                action["source_path"]
+                for action in report["actions"]
+                if action["source_path"]
+            },
+            {
+                "docs/AGENTS.md",
+                "docs/spec/AGENTS.md",
+                "docs/spec/main-spec.md",
+                "docs/appendix/README.md",
+            },
+        )
+        self.assertTrue(report["sections"]["relocations"])
+        after = {
+            path.relative_to(target).as_posix(): path.read_bytes()
+            for path in target.rglob("*")
+            if path.is_file()
+        }
+        self.assertEqual(after, before)
 
-    def test_legacy_paths_remain_conflicts_when_norn_files_exist(self) -> None:
-        """防止新旧治理路径并存时，初始化器把双规格源误报为正常。"""
-        with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory)
-            self.run_script(target, "--apply")
-            for relative_path in LEGACY_FILES:
-                legacy_file = target / relative_path
-                legacy_file.parent.mkdir(parents=True, exist_ok=True)
-                legacy_file.write_text(f"# legacy {relative_path}\n", encoding="utf-8")
+    def test_apply_requires_plan_artifact(self) -> None:
+        target = self.make_target()
 
-            report = self.run_script(target)
-            results = {item["path"]: item for item in report["files"]}
+        completed = self.run_cli_raw("apply", "--target", target)
 
-            self.assertEqual(report["counts"], {"missing": 0, "same": 2, "conflict": 4})
-            for new_path, legacy_path in zip(LEGACY_TARGET_FILES, LEGACY_FILES, strict=True):
-                self.assertEqual(results[new_path]["status"], "conflict")
-                self.assertEqual(results[new_path]["legacy_path"], legacy_path)
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("--plan", completed.stderr)
+
+    def test_analyze_then_apply_initializes_and_verifies_project(self) -> None:
+        target = self.make_target()
+        analysis = self.analyze(target)
+
+        applied = self.run_cli_json(
+            "apply",
+            "--target",
+            target,
+            "--plan",
+            analysis["plan_path"],
+        )
+
+        self.assertEqual(applied["command"], "apply")
+        self.assertEqual(applied["verification"]["state"], "current")
+        self.assertTrue(applied["verification"]["manifest_valid"])
+        self.assertTrue(applied["verification"]["single_spec_source"])
+        self.assertEqual(set(applied["created"]), EXPECTED_FILES)
+        self.assertFalse((target / "docs").exists())
+        self.assertFalse((target / "norn-governance/plans").exists())
+
+    def test_apply_rejects_tampered_plan_digest(self) -> None:
+        target = self.make_target()
+        analysis = self.analyze(target)
+        plan_path = Path(analysis["plan_path"])
+        payload = json.loads(plan_path.read_text(encoding="utf-8"))
+        payload["target_root"] = str(self.make_target())
+        plan_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        completed = self.run_cli_raw(
+            "apply", "--target", target, "--plan", plan_path
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("plan digest mismatch", completed.stderr)
+
+    def test_apply_rejects_target_that_differs_from_plan(self) -> None:
+        target = self.make_target()
+        other_target = self.make_target()
+        analysis = self.analyze(target)
+
+        completed = self.run_cli_raw(
+            "apply",
+            "--target",
+            other_target,
+            "--plan",
+            analysis["plan_path"],
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("target does not match plan", completed.stderr)
+        self.assertEqual(tuple(other_target.iterdir()), ())
+
+    def test_human_analysis_contains_decision_sections(self) -> None:
+        target = self.copy_legacy_template()
+        completed = self.run_cli_raw(
+            "analyze",
+            "--target",
+            target,
+            "--artifact-dir",
+            self.workspace / "human-artifacts",
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        for heading in (
+            "状态",
+            "归属证据",
+            "路径迁移",
+            "规则升级",
+            "冲突",
+            "删除",
+            "风险",
+            "验证",
+        ):
+            self.assertIn(heading, completed.stdout)
+        self.assertIn("Norn Governance", completed.stdout)
+
+    def test_resolve_adopt_template_rebuilds_executable_plan(self) -> None:
+        target = self.copy_legacy_template()
+        with (target / "docs/AGENTS.md").open("a", encoding="utf-8") as stream:
+            stream.write("\n## Project-specific docs rule\n")
+        analysis = self.analyze(target)
+        conflict = next(
+            action
+            for action in analysis["actions"]
+            if action["target_path"] == "norn-governance/AGENTS.md"
+        )
+        resolutions_path = Path(analysis["plan_path"]).parent / "resolutions.json"
+        resolutions_path.write_text(
+            json.dumps(
+                {
+                    "resolutions": [
+                        {
+                            "action_id": conflict["action_id"],
+                            "choice": "adopt-template",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        resolved = self.run_cli_json(
+            "resolve",
+            "--target",
+            target,
+            "--plan",
+            analysis["plan_path"],
+            "--resolutions",
+            resolutions_path,
+        )
+
+        self.assertTrue(resolved["executable"])
+        self.assertFalse(resolved["sections"]["conflicts"])
+        applied = self.run_cli_json(
+            "apply",
+            "--target",
+            target,
+            "--plan",
+            resolved["plan_path"],
+        )
+        self.assertEqual(applied["verification"]["state"], "current")
 
 
 if __name__ == "__main__":

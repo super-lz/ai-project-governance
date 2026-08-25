@@ -1,72 +1,78 @@
 # Norn
 
-面向 AI 协作开发的项目治理框架。Norn 把长期依据和短期执行状态放进职责明确、可选择加载的区域，减少跨会话、跨设备开发时的重复分析和记忆成本。
+Norn 是面向 AI 协作开发的项目治理框架。它把长期依据和短期执行状态放进职责明确、可选择加载的区域，降低跨会话、跨设备开发时的重复分析和记忆成本。
 
-它把长期依据收敛到三大稳定来源：`norn-governance/spec/` 负责主实现规格，代码负责真实实现，Git 历史负责追溯变更；根目录 `AGENTS.md` 负责约束 agent 如何使用这些来源。`norn-governance/plans/` 只承接尚未完成任务的短期执行状态，不提升为第四种权威来源。
+长期事实收敛到三类来源：`norn-governance/spec/` 保存业务语义和实现规格，代码保存真实实现，Git 历史追溯变更；根 `AGENTS.md` 约束 agent 如何使用这些来源。`norn-governance/plans/` 只承接未完成任务的短期状态，不是第四种权威来源。
 
-主实现规格是项目骨骼，代码是项目皮肤和血肉。规格负责业务语义：目标、流程、边界、规则、失败处理和验收；代码负责实现事实：真实机制、当前可观察行为和可追溯代码路径。读代码、改代码和验收结果时都要主动识别规格是否落后；确定是稳定代码现实而规格落后时自动回写并用 `⚠️` 提示，不确定时用 `🚨` 询问，确认没有真实实现变动时用 `🔵` 说明无需回写。
+主实现规格是项目骨骼，代码是项目皮肤和血肉。规格保存换语言、框架或代码结构后仍需保持的目标、流程、边界、规则、失败处理和验收；当前机制与调用细节留在代码中。实现和审阅时都要检查规格是否落后，并把稳定结论回写到正确的长期来源。
 
-主实现规格不是代码复述。它保存代码无法稳定表达、但决定业务语义等价性的内容；换一种语言、框架或代码结构后仍必须保持的信息才进入规格，只描述当前代码如何做到的信息留在代码里。
+## 能力
 
-框架要求所有实现先回到第一性原理：真实用户、真实问题、可感知结果和验收方式。任何新增功能、组件、状态、依赖、文档或流程，都应能说明服务哪个真实需求；如果方向偏离最终目的，AI 应先提示风险并给出更小的可验证方案。
+统一使用 `$norn-governance`：
 
-这些规则更偏方法论而不是知识清单：用少数稳定思想指导 AI 判断复杂度、边界、演化和取舍，同时避免把项目变成表格、流程和概念堆叠。
+- 初始化：为空项目创建当前 Norn 治理结构。
+- 迁移：识别旧 `docs/` 治理文件并迁移到 `norn-governance/`，保留项目自己的其他文档。
+- 升级：更新 Norn 管理的通用规则，同时保留主规格和受管区块外的项目内容。
 
-## 目录
+Skill 会先只读分析并展示逐文件计划。写入、迁移或删除只在用户确认后执行；归属不明、目标路径冲突或修改过的受管区块需要单独选择。用户不需要手工运行内部脚本。
+
+例如：
 
 ```text
-README.md
-template/
+使用 $norn-governance 初始化当前项目
+使用 $norn-governance 把旧治理结构迁移到 Norn
+使用 $norn-governance 更新当前项目的治理规则
+```
+
+## 治理模型
+
+初始化后的固定结构为：
+
+```text
+AGENTS.md
+norn-governance/
+  .norn.json
   AGENTS.md
-  norn-governance/
+  spec/
     AGENTS.md
-    spec/
-      AGENTS.md
-      main-spec.md
-    plans/                 # 有未完成计划时按需创建
-    appendix/
-      README.md
-skills/
-  norn-governance/
-    SKILL.md
-    scripts/
-      manage_norn_governance.py
-    assets/
-      ai-project-governance-template/
+    main-spec.md
+  appendix/
+    README.md
 ```
 
-## 推荐使用方式
+`main-spec.md` 初始化后归项目所有，后续升级不会使用模板覆盖。四个通用 Markdown 治理文件通过稳定的 `norn:managed` 区块区分 Norn 规则和项目扩展：基线未修改时可自动升级，基线已修改时由用户选择保留、采用新版或语义融合。`.norn.json` 只记录模板版本、所有权和区块基线哈希，不是人类规格。
 
-优先使用 `$norn-governance` skill 初始化目标项目。它会先分析目标项目中缺失、相同或冲突的 Norn 治理文件，默认不覆盖已有文件。仓库源码位于 `skills/norn-governance/`。
-
-```bash
-python3 skills/norn-governance/scripts/manage_norn_governance.py --target <目标项目路径>
-```
-
-确认只需要写入缺失文件后再执行：
-
-```bash
-python3 skills/norn-governance/scripts/manage_norn_governance.py --target <目标项目路径> --apply
-```
-
-若目标项目已有根 `AGENTS.md`、`norn-governance/` 文件或旧版 `docs/` 治理路径，脚本会报告冲突和融合建议，不会自动覆盖、自动移动或创建第二套规格。目标项目自己的其他 `docs/` 内容不属于 Norn 管理范围。
-
-## 手动使用方式
-
-1. 将 `template/AGENTS.md` 和 `template/norn-governance/` 复制到目标项目根目录。
-2. 按项目情况修改 `norn-governance/spec/main-spec.md`，必要时重命名为具体业务规格。
-3. 后续让 AI 按项目内 `AGENTS.md` 工作。
-
-复杂或可能中断的任务可以在 `norn-governance/plans/` 创建计划并随分支提交；任务完成或取消后，将稳定结论回写规格、代码或测试，再删除计划。简单任务不创建计划文件。
-
-具体执行流程、计划生命周期、文档维护规则和规格边界都在模板文件中定义。
-
-## 本机 skill 安装
-
-仓库内 `skills/norn-governance/` 是源码位置。需要让 Codex 本机自动发现时，将该目录同步到：
+旧版迁移只处理确认属于 Norn 的以下映射：
 
 ```text
-~/.codex/skills/norn-governance/
+docs/AGENTS.md                 -> norn-governance/AGENTS.md
+docs/spec/AGENTS.md            -> norn-governance/spec/AGENTS.md
+docs/spec/main-spec.md         -> norn-governance/spec/main-spec.md
+docs/appendix/README.md        -> norn-governance/appendix/README.md
 ```
 
-后续修改先更新仓库内源码，再同步到本机安装副本。
+只出现同名路径不足以证明文件归 Norn 所有。目标内容写入并校验成功前不会删除旧文件，旧目录也只在完全为空时清理。
+
+## 短期计划
+
+`norn-governance/plans/` 不在固定初始化清单中。只有任务需要暂停、跨会话或跨设备继续时，才按需保存简短恢复计划；它只记录意图、状态、相对路径、选择、未决冲突、风险和重新分析规则，不保存文件正文、临时产物路径或可复用授权。任务完成或取消后删除计划。
+
+## 仓库结构
+
+```text
+template/                         # 当前治理模板
+skills/norn-governance/
+  SKILL.md                        # 用户意图与交互编排
+  agents/openai.yaml              # Codex UI 元数据
+  references/recovery-plans.md    # 按需加载的跨会话规则
+  scripts/                        # 确定性分析、解析和执行引擎
+  assets/
+    ai-project-governance-template/
+    legacy-templates/
+  tests/
+norn-governance/spec/main-spec.md # 本项目的实现规格
+```
+
+仓库内 `skills/norn-governance/` 是 canonical 源码。本机 Codex 安装副本位于 `~/.codex/skills/norn-governance/`；变更必须先在仓库中验证，再同步安装副本。
+
+Norn 不自动提交、推送、创建分支、修改 Git 配置，也不迁移任意项目文档或尝试通用 Markdown 自动合并。
