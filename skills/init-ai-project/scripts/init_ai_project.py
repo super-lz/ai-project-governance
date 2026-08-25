@@ -13,11 +13,18 @@ from pathlib import Path
 
 TEMPLATE_FILES = [
     "AGENTS.md",
-    "docs/AGENTS.md",
-    "docs/spec/AGENTS.md",
-    "docs/spec/main-spec.md",
-    "docs/appendix/README.md",
+    "norn-governance/AGENTS.md",
+    "norn-governance/spec/AGENTS.md",
+    "norn-governance/spec/main-spec.md",
+    "norn-governance/appendix/README.md",
 ]
+
+LEGACY_PATHS = {
+    "norn-governance/AGENTS.md": "docs/AGENTS.md",
+    "norn-governance/spec/AGENTS.md": "docs/spec/AGENTS.md",
+    "norn-governance/spec/main-spec.md": "docs/spec/main-spec.md",
+    "norn-governance/appendix/README.md": "docs/appendix/README.md",
+}
 
 
 @dataclass(frozen=True)
@@ -25,6 +32,7 @@ class FileResult:
     path: str
     status: str
     action: str
+    legacy_path: str | None = None
     fusion_guidance: str | None = None
     template_headings: list[str] | None = None
     target_headings: list[str] | None = None
@@ -37,6 +45,8 @@ class FileResult:
         }
         if self.fusion_guidance:
             payload["fusion_guidance"] = self.fusion_guidance
+        if self.legacy_path:
+            payload["legacy_path"] = self.legacy_path
         if self.template_headings is not None:
             payload["template_headings"] = self.template_headings
         if self.target_headings is not None:
@@ -76,18 +86,25 @@ def guidance_for(path: str) -> str:
             "用户确认后，将模板中的项目总指挥职责、第一性原则工作流、"
             "实现规格维护规则和文档治理规则融合到现有根目录 AGENTS.md。"
         )
-    if path.startswith("docs/spec/"):
+    if path.startswith("norn-governance/spec/"):
         return (
             "保留目标项目已有实现规格内容；用户确认后，融合模板中关于主规格权威性、"
             "规格变更确认和禁止记录开发流水的规则。"
         )
-    if path == "docs/AGENTS.md":
+    if path == "norn-governance/AGENTS.md":
         return (
-            "如果目标项目已有更具体的文档分类，优先保留现有分类；用户确认后，"
-            "融合模板中 spec/appendix 职责和长期文档治理规则。"
+            "保留目标项目已有治理分类；用户确认后，融合模板中 spec/plans/appendix "
+            "职责和长期、临时材料的边界。"
         )
     return (
         "除非用户确认融合，否则保留目标文件；只补充附录材料不作为权威实现依据的治理规则。"
+    )
+
+
+def legacy_guidance_for(path: str, legacy_path: str) -> str:
+    return (
+        f"检测到旧版 Norn 治理路径 {legacy_path}。不要让它与 {path} 形成两套依据；"
+        "先分析旧文件是否属于治理模板，再由用户确认迁移，且不要移动目标项目的其他 docs 内容。"
     )
 
 
@@ -113,6 +130,22 @@ def analyze_file(target_root: Path, source_root: Path, relative_path: str) -> Fi
 
     if not source.is_file():
         raise FileNotFoundError(f"模板文件缺失：{source}")
+
+    legacy_path = LEGACY_PATHS.get(relative_path)
+    if legacy_path:
+        legacy_target = target_root / legacy_path
+        if legacy_target.exists():
+            return FileResult(
+                path=relative_path,
+                status="conflict",
+                action="skip",
+                legacy_path=legacy_path,
+                fusion_guidance=legacy_guidance_for(relative_path, legacy_path),
+                template_headings=markdown_headings(source),
+                target_headings=(
+                    markdown_headings(legacy_target) if legacy_target.is_file() else []
+                ),
+            )
 
     if not target.exists():
         return FileResult(
@@ -194,6 +227,8 @@ def print_human_report(report: dict) -> None:
             template_headings = ", ".join(item["template_headings"]) or "（无）"
             print(f"    目标标题：{target_headings}")
             print(f"    模板标题：{template_headings}")
+        if "legacy_path" in item:
+            print(f"    旧版路径：{item['legacy_path']}")
         if "fusion_guidance" in item:
             print(f"    融合建议：{item['fusion_guidance']}")
 

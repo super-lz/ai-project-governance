@@ -83,7 +83,7 @@
 拆分时优先按系统边界拆，不按开发阶段拆。推荐形态是：
 
 ```text
-docs/spec/<feature-or-system>/
+norn-governance/spec/<feature-or-system>/
   index.md
   <subsystem-a>.md
   <subsystem-b>.md
