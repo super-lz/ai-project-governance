@@ -17,6 +17,7 @@ sys.path.insert(0, str(SCRIPTS_ROOT))
 from norn_governance.models import (  # noqa: E402
     ActionKind,
     ConflictChoice,
+    ConflictResolution,
     GovernancePlan,
     ManagedFileRecord,
     NornManifest,
@@ -32,8 +33,13 @@ from norn_governance.analyzer import (  # noqa: E402
     analyze_governance,
     classify_project,
     fingerprint_path,
+    resolve_conflicts,
 )
 from norn_governance.templates import MANAGED_PATHS, asset_template_root  # noqa: E402
+from norn_governance.managed_markdown import (  # noqa: E402
+    parse_managed_blocks,
+    replace_managed_block,
+)
 
 
 class PlanModelTests(unittest.TestCase):
@@ -281,6 +287,36 @@ class GovernanceAnalyzerTests(unittest.TestCase):
     def copy_legacy_template(self) -> Path:
         target = self.make_target()
         shutil.copytree(self.legacy_root, target, dirs_exist_ok=True)
+        return target
+
+    def copy_versioned_project(self) -> Path:
+        target = self.copy_current_template()
+        root_path = target / "AGENTS.md"
+        old_block = (
+            "<!-- norn:managed:start core-governance -->\n"
+            "# Prior Core Governance\n\nLegacy managed rules.\n"
+            "<!-- norn:managed:end core-governance -->"
+        )
+        root_path.write_text(
+            replace_managed_block(
+                root_path.read_text(encoding="utf-8"),
+                "core-governance",
+                old_block,
+            ),
+            encoding="utf-8",
+        )
+        manifest_path = target / "norn-governance/.norn.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["template_version"] = 0
+        for record in manifest["managed_files"].values():
+            record["template_version"] = 0
+        manifest["managed_files"]["AGENTS.md"]["base_sha256"] = hashlib.sha256(
+            old_block.encode("utf-8")
+        ).hexdigest()
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
         return target
 
     def snapshot(self, target: Path) -> dict[str, bytes]:
@@ -543,6 +579,196 @@ class GovernanceAnalyzerTests(unittest.TestCase):
         )
 
         self.assertEqual(classify_project(target), ProjectState.CONFLICT)
+
+    def test_unmodified_managed_block_upgrades_and_preserves_project_text(self) -> None:
+        target = self.copy_versioned_project()
+        self.append(target, "AGENTS.md", "\n## Project Rule\nKeep this.\n")
+        artifacts = self.artifacts()
+
+        plan = analyze_governance(target, artifacts)
+
+        self.assertEqual(plan.project_state, ProjectState.UPGRADEABLE)
+        root_action = self.action_for(plan, "AGENTS.md", ActionKind.MERGE)
+        rendered = self.rendered_text(artifacts, root_action)
+        self.assertIn("## Project Rule\nKeep this.", rendered)
+        self.assertIn("## 整体性与变更边界", rendered)
+        manifest_action = self.action_for(
+            plan, "norn-governance/.norn.json", ActionKind.MERGE
+        )
+        upgraded_manifest = NornManifest.from_dict(
+            json.loads(self.rendered_text(artifacts, manifest_action))
+        )
+        self.assertEqual(upgraded_manifest.template_version, 1)
+
+    def test_modified_managed_block_requires_explicit_choice(self) -> None:
+        target = self.copy_versioned_project()
+        root_path = target / "AGENTS.md"
+        customized = (
+            "<!-- norn:managed:start core-governance -->\n"
+            "project customized managed text\n"
+            "<!-- norn:managed:end core-governance -->"
+        )
+        root_path.write_text(
+            replace_managed_block(
+                root_path.read_text(encoding="utf-8"),
+                "core-governance",
+                customized,
+            ),
+            encoding="utf-8",
+        )
+
+        plan = analyze_governance(target, self.artifacts())
+
+        root_action = self.action_for(plan, "AGENTS.md", ActionKind.CONFLICT)
+        self.assertIn("managed block differs from recorded base", root_action.reason)
+        self.assertEqual(
+            root_action.allowed_resolutions,
+            (
+                ConflictChoice.KEEP_CURRENT,
+                ConflictChoice.ADOPT_TEMPLATE,
+                ConflictChoice.SEMANTIC_MERGE,
+            ),
+        )
+
+    def test_keep_current_resolves_upgrade_and_records_new_baseline(self) -> None:
+        target = self.copy_versioned_project()
+        root_path = target / "AGENTS.md"
+        customized = (
+            "<!-- norn:managed:start core-governance -->\ncustom baseline\n"
+            "<!-- norn:managed:end core-governance -->"
+        )
+        root_path.write_text(
+            replace_managed_block(
+                root_path.read_text(encoding="utf-8"),
+                "core-governance",
+                customized,
+            ),
+            encoding="utf-8",
+        )
+        artifacts = self.artifacts()
+        original = analyze_governance(target, artifacts)
+        conflict = self.action_for(original, "AGENTS.md", ActionKind.CONFLICT)
+
+        resolved = resolve_conflicts(
+            original,
+            (
+                ConflictResolution(
+                    action_id=conflict.action_id,
+                    choice=ConflictChoice.KEEP_CURRENT,
+                ),
+            ),
+            artifacts,
+        )
+
+        self.assertNotEqual(resolved.plan_sha256, original.plan_sha256)
+        self.assertFalse(resolved.conflicts)
+        self.action_for(resolved, "AGENTS.md", ActionKind.KEEP)
+        manifest_action = self.action_for(
+            resolved, "norn-governance/.norn.json", ActionKind.MERGE
+        )
+        manifest = NornManifest.from_dict(
+            json.loads(self.rendered_text(artifacts, manifest_action))
+        )
+        self.assertEqual(
+            manifest.managed_files["AGENTS.md"].base_sha256,
+            parse_managed_blocks(root_path.read_text(encoding="utf-8"))[
+                "core-governance"
+            ].sha256,
+        )
+
+    def test_adopt_template_resolves_customized_legacy_governance(self) -> None:
+        target = self.copy_legacy_template()
+        self.append(target, "docs/AGENTS.md", "\n## Custom Legacy Rule\n")
+        artifacts = self.artifacts()
+        original = analyze_governance(target, artifacts)
+        conflict = self.action_for(
+            original, "norn-governance/AGENTS.md", ActionKind.CONFLICT
+        )
+
+        resolved = resolve_conflicts(
+            original,
+            (
+                ConflictResolution(
+                    action_id=conflict.action_id,
+                    choice=ConflictChoice.ADOPT_TEMPLATE,
+                ),
+            ),
+            artifacts,
+        )
+
+        adopted = self.action_for(
+            resolved, "norn-governance/AGENTS.md", ActionKind.MERGE
+        )
+        self.assertEqual(
+            self.rendered_text(artifacts, adopted).encode("utf-8"),
+            (self.asset_root / "norn-governance/AGENTS.md").read_bytes(),
+        )
+        self.action_for(resolved, "norn-governance/.norn.json")
+
+    def test_semantic_merge_is_canonicalized_and_hash_bound(self) -> None:
+        target = self.copy_legacy_template()
+        self.append(target, "docs/AGENTS.md", "\n## Custom Legacy Rule\nKeep this.\n")
+        artifacts = self.artifacts()
+        original = analyze_governance(target, artifacts)
+        conflict = self.action_for(
+            original, "norn-governance/AGENTS.md", ActionKind.CONFLICT
+        )
+        semantic_path = artifacts / "semantic-input.md"
+        semantic_body = (
+            (self.asset_root / "norn-governance/AGENTS.md").read_text(
+                encoding="utf-8"
+            )
+            + "\n## Custom Legacy Rule\nKeep this.\n"
+        ).encode("utf-8")
+        semantic_path.write_bytes(semantic_body)
+        semantic_sha256 = hashlib.sha256(semantic_body).hexdigest()
+
+        resolved = resolve_conflicts(
+            original,
+            (
+                ConflictResolution(
+                    action_id=conflict.action_id,
+                    choice=ConflictChoice.SEMANTIC_MERGE,
+                    rendered_path=str(semantic_path),
+                    rendered_sha256=semantic_sha256,
+                ),
+            ),
+            artifacts,
+        )
+
+        action = self.action_for(
+            resolved, "norn-governance/AGENTS.md", ActionKind.MERGE
+        )
+        self.assertEqual(action.output_sha256, semantic_sha256)
+        self.assertEqual(
+            (artifacts / "rendered" / f"{action.action_id}.content").read_bytes(),
+            semantic_body,
+        )
+
+    def test_semantic_merge_rejects_outside_or_mismatched_artifact(self) -> None:
+        target = self.copy_legacy_template()
+        self.append(target, "docs/AGENTS.md", "\n## Custom Legacy Rule\n")
+        artifacts = self.artifacts()
+        original = analyze_governance(target, artifacts)
+        conflict = self.action_for(
+            original, "norn-governance/AGENTS.md", ActionKind.CONFLICT
+        )
+        outside = self.workspace / "outside.md"
+        outside.write_text("unsafe\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "artifact root"):
+            resolve_conflicts(
+                original,
+                (
+                    ConflictResolution(
+                        action_id=conflict.action_id,
+                        choice=ConflictChoice.SEMANTIC_MERGE,
+                        rendered_path=str(outside),
+                        rendered_sha256=hashlib.sha256(b"unsafe\n").hexdigest(),
+                    ),
+                ),
+                artifacts,
+            )
 
 
 if __name__ == "__main__":

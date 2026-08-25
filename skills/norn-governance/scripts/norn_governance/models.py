@@ -54,6 +54,53 @@ class ConflictChoice(str, Enum):
     SEMANTIC_MERGE = "semantic-merge"
 
 
+@dataclass(frozen=True)
+class ConflictResolution:
+    action_id: str
+    choice: ConflictChoice
+    rendered_path: str | None = None
+    rendered_sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.action_id, str) or not self.action_id:
+            raise ValueError("action_id must be a nonempty string")
+        if not isinstance(self.choice, ConflictChoice):
+            object.__setattr__(
+                self,
+                "choice",
+                _parse_enum(ConflictChoice, self.choice, "conflict choice"),
+            )
+        if self.choice is ConflictChoice.SEMANTIC_MERGE:
+            if not isinstance(self.rendered_path, str) or not self.rendered_path:
+                raise ValueError("semantic-merge requires rendered_path")
+            _require_sha256(
+                self.rendered_sha256, "rendered_sha256", optional=False
+            )
+        elif self.rendered_path is not None or self.rendered_sha256 is not None:
+            raise ValueError(
+                "rendered_path and rendered_sha256 are only valid for semantic-merge"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "action_id": self.action_id,
+            "choice": self.choice.value,
+            "rendered_path": self.rendered_path,
+            "rendered_sha256": self.rendered_sha256,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> ConflictResolution:
+        return cls(
+            action_id=payload.get("action_id"),
+            choice=_parse_enum(
+                ConflictChoice, payload.get("choice"), "conflict choice"
+            ),
+            rendered_path=payload.get("rendered_path"),
+            rendered_sha256=payload.get("rendered_sha256"),
+        )
+
+
 def canonical_json_bytes(value: Mapping[str, Any]) -> bytes:
     return json.dumps(
         value,

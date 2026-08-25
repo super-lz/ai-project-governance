@@ -9,7 +9,10 @@ from .managed_markdown import ManagedBlockError, parse_managed_blocks
 from .models import (
     ActionKind,
     ConflictChoice,
+    ConflictResolution,
     GovernancePlan,
+    ManagedFileRecord,
+    NornManifest,
     OwnershipKind,
     PathFingerprint,
     PathKind,
@@ -27,7 +30,9 @@ from .templates import (
     asset_template_root,
     legacy_template_root,
     load_manifest,
+    manifest_bytes,
 )
+from .managed_markdown import replace_managed_block
 
 
 LEGACY_PATH_MAP = {
@@ -144,7 +149,8 @@ def _manifest_state(target_root: Path) -> ProjectState:
         if tuple(blocks) != expected_blocks:
             return ProjectState.CONFLICT
         if blocks[expected_blocks[0]].sha256 != record.base_sha256:
-            return ProjectState.CONFLICT
+            if manifest.template_version >= TEMPLATE_VERSION:
+                return ProjectState.CONFLICT
     if manifest.template_version < TEMPLATE_VERSION:
         return ProjectState.UPGRADEABLE
     return ProjectState.CURRENT
@@ -707,6 +713,299 @@ def _current_keep_actions(target_root: Path) -> list[PlannedAction]:
     ]
 
 
+def _analyze_upgrade(
+    target_root: Path,
+    artifact_root: Path,
+) -> list[PlannedAction]:
+    manifest = load_manifest(target_root / MANIFEST_PATH)
+    actions: list[PlannedAction] = []
+    current_templates = asset_template_root()
+    for relative_path, (ownership, block_ids) in MANAGED_PATHS.items():
+        if ownership is OwnershipKind.PROJECT:
+            actions.append(
+                _keep_action(
+                    target_root,
+                    relative_path,
+                    reason="project-owned specification is never replaced by upgrades",
+                )
+            )
+            continue
+        current_text = (target_root / relative_path).read_text(encoding="utf-8")
+        current_blocks = parse_managed_blocks(current_text)
+        block_id = block_ids[0]
+        record = manifest.managed_files[relative_path]
+        if current_blocks[block_id].sha256 != record.base_sha256:
+            actions.append(
+                _conflict_action(
+                    target_root,
+                    relative_path,
+                    reason="managed block differs from recorded base",
+                    evidence=(
+                        "current managed block SHA-256 differs from the manifest baseline",
+                    ),
+                    allowed_resolutions=(
+                        ConflictChoice.KEEP_CURRENT,
+                        ConflictChoice.ADOPT_TEMPLATE,
+                        ConflictChoice.SEMANTIC_MERGE,
+                    ),
+                )
+            )
+            continue
+        template_text = (current_templates / relative_path).read_text(encoding="utf-8")
+        template_block = parse_managed_blocks(template_text)[block_id].text
+        rendered = replace_managed_block(current_text, block_id, template_block)
+        actions.extend(
+            _plan_output(
+                target_root,
+                artifact_root,
+                target_path=relative_path,
+                body=rendered.encode("utf-8"),
+                reason="upgrade an unmodified managed block and preserve project text",
+                evidence=("current block SHA-256 matches the recorded baseline",),
+                allow_existing_replace=True,
+            )
+        )
+    if not any(action.kind is ActionKind.CONFLICT for action in actions):
+        actions.extend(
+            _plan_output(
+                target_root,
+                artifact_root,
+                target_path=MANIFEST_PATH,
+                body=(current_templates / MANIFEST_PATH).read_bytes(),
+                reason="advance the manifest after all managed blocks upgrade",
+                evidence=("every managed block has a deterministic final baseline",),
+                allow_existing_replace=True,
+            )
+        )
+    return actions
+
+
+def _resolved_plan_state(plan: GovernancePlan) -> ProjectState:
+    if plan.project_state is ProjectState.UPGRADEABLE:
+        return ProjectState.UPGRADEABLE
+    if any(
+        action.source_path and action.source_path.startswith("docs/")
+        for action in plan.actions
+    ):
+        return ProjectState.LEGACY
+    return ProjectState.MIXED
+
+
+def _final_governed_body(
+    target_root: Path,
+    artifact_root: Path,
+    actions: list[PlannedAction],
+    relative_path: str,
+) -> bytes:
+    candidates = [
+        action for action in actions if action.target_path == relative_path
+    ]
+    if len(candidates) != 1:
+        raise ValueError(f"resolved plan must contain one action for {relative_path}")
+    action = candidates[0]
+    if action.output_sha256 is not None:
+        artifact = artifact_root / "rendered" / f"{action.action_id}.content"
+        body = artifact.read_bytes()
+        if sha256_bytes(body) != action.output_sha256:
+            raise ValueError(f"rendered artifact hash mismatch for {action.action_id}")
+        return body
+    path = target_root / relative_path
+    if action.kind is ActionKind.KEEP and path.is_file():
+        return path.read_bytes()
+    raise ValueError(f"resolved action has no final body for {relative_path}")
+
+
+def _resolved_manifest(
+    target_root: Path,
+    artifact_root: Path,
+    actions: list[PlannedAction],
+) -> NornManifest:
+    records: dict[str, ManagedFileRecord] = {}
+    for relative_path, (ownership, block_ids) in MANAGED_PATHS.items():
+        body = _final_governed_body(
+            target_root, artifact_root, actions, relative_path
+        )
+        if ownership is OwnershipKind.PROJECT:
+            base_sha256 = None
+        else:
+            try:
+                blocks = parse_managed_blocks(body.decode("utf-8"))
+            except (UnicodeDecodeError, ManagedBlockError) as exc:
+                raise ValueError(
+                    f"invalid resolved managed content for {relative_path}: {exc}"
+                ) from exc
+            if tuple(blocks) != block_ids:
+                raise ValueError(
+                    f"resolved managed blocks mismatch for {relative_path}"
+                )
+            base_sha256 = blocks[block_ids[0]].sha256
+        records[relative_path] = ManagedFileRecord(
+            ownership=ownership,
+            base_sha256=base_sha256,
+            managed_blocks=block_ids,
+            template_version=TEMPLATE_VERSION,
+        )
+    return NornManifest(
+        schema_version=1,
+        template_version=TEMPLATE_VERSION,
+        managed_files=records,
+    )
+
+
+def resolve_conflicts(
+    plan: GovernancePlan,
+    choices: tuple[ConflictResolution, ...],
+    artifact_root: Path,
+) -> GovernancePlan:
+    if plan.plan_sha256 != plan.expected_digest():
+        raise ValueError("plan digest mismatch")
+    artifact_root = Path(artifact_root).resolve()
+    target_root = Path(plan.target_root)
+    conflicts = {
+        action.action_id: action
+        for action in plan.actions
+        if action.kind is ActionKind.CONFLICT
+    }
+    choice_map: dict[str, ConflictResolution] = {}
+    for resolution in choices:
+        if resolution.action_id in choice_map:
+            raise ValueError(f"duplicate conflict choice: {resolution.action_id}")
+        choice_map[resolution.action_id] = resolution
+    if set(choice_map) != set(conflicts):
+        missing = sorted(set(conflicts) - set(choice_map))
+        extra = sorted(set(choice_map) - set(conflicts))
+        raise ValueError(f"conflict choices mismatch: missing={missing}, extra={extra}")
+
+    resolved_actions: list[PlannedAction] = []
+    for action in plan.actions:
+        if action.kind is not ActionKind.CONFLICT:
+            if action.target_path != MANIFEST_PATH:
+                resolved_actions.append(action)
+            continue
+        resolution = choice_map[action.action_id]
+        if resolution.choice not in action.allowed_resolutions:
+            raise ValueError(
+                f"choice {resolution.choice.value} is not allowed for {action.action_id}"
+            )
+        if resolution.choice is ConflictChoice.KEEP_CURRENT:
+            resolved_actions.append(
+                PlannedAction(
+                    action_id=action.action_id,
+                    kind=ActionKind.KEEP,
+                    source_path=None,
+                    target_path=action.target_path,
+                    source_before=None,
+                    target_before=action.target_before,
+                    output_sha256=None,
+                    ownership=action.ownership,
+                    evidence=(*action.evidence, "user chose to keep current managed block"),
+                    reason="keep the current managed block as the accepted baseline",
+                    risk="the current project customization becomes the new baseline",
+                    verification=("target fingerprint remains unchanged",),
+                    allowed_resolutions=(),
+                )
+            )
+            continue
+
+        if resolution.choice is ConflictChoice.ADOPT_TEMPLATE:
+            if action.target_path not in MANAGED_PATHS:
+                raise ValueError(
+                    f"no canonical template for conflict {action.action_id}"
+                )
+            body = (asset_template_root() / action.target_path).read_bytes()
+        else:
+            assert resolution.rendered_path is not None
+            semantic_path = Path(resolution.rendered_path).resolve()
+            if not semantic_path.is_relative_to(artifact_root):
+                raise ValueError("semantic artifact must stay inside artifact root")
+            try:
+                body = semantic_path.read_bytes()
+                body.decode("utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                raise ValueError(f"invalid semantic artifact: {exc}") from exc
+            if sha256_bytes(body) != resolution.rendered_sha256:
+                raise ValueError("semantic artifact hash mismatch")
+            if action.target_path in MANAGED_PATHS:
+                _, expected_blocks = MANAGED_PATHS[action.target_path]
+                if expected_blocks:
+                    blocks = parse_managed_blocks(body.decode("utf-8"))
+                    if tuple(blocks) != expected_blocks:
+                        raise ValueError("semantic artifact managed blocks mismatch")
+
+        output_sha256 = _write_artifact(artifact_root, action.action_id, body)
+        kind = (
+            ActionKind.MERGE
+            if action.source_path or action.target_before.exists
+            else ActionKind.CREATE
+        )
+        resolved_actions.append(
+            PlannedAction(
+                action_id=action.action_id,
+                kind=kind,
+                source_path=action.source_path,
+                target_path=action.target_path,
+                source_before=action.source_before,
+                target_before=action.target_before,
+                output_sha256=output_sha256,
+                ownership=action.ownership,
+                evidence=(*action.evidence, f"user chose {resolution.choice.value}"),
+                reason="apply the explicitly resolved governance content",
+                risk="writes only the user-selected, hash-bound result",
+                verification=(
+                    "target SHA-256 equals resolved output",
+                )
+                + (("legacy source is absent",) if action.source_path else ()),
+                allowed_resolutions=(),
+            )
+        )
+
+    directory_paths = {"docs/spec", "docs/appendix", "docs"}
+    resolved_actions = [
+        action
+        for action in resolved_actions
+        if not (
+            action.kind is ActionKind.DELETE
+            and action.target_path in directory_paths
+        )
+    ]
+    _append_directory_cleanup(target_root, resolved_actions)
+    manifest = _resolved_manifest(target_root, artifact_root, resolved_actions)
+    manifest_body = manifest_bytes(manifest)
+    manifest_action_id = _action_id("merge", MANIFEST_PATH)
+    manifest_sha256 = _write_artifact(
+        artifact_root, manifest_action_id, manifest_body
+    )
+    manifest_before = fingerprint_path(target_root / MANIFEST_PATH)
+    resolved_actions.append(
+        PlannedAction(
+            action_id=manifest_action_id,
+            kind=(
+                ActionKind.MERGE if manifest_before.exists else ActionKind.CREATE
+            ),
+            source_path=None,
+            target_path=MANIFEST_PATH,
+            source_before=None,
+            target_before=manifest_before,
+            output_sha256=manifest_sha256,
+            ownership=OwnershipKind.MANAGED,
+            evidence=("every conflict has an explicit validated resolution",),
+            reason="record final managed baselines after conflict resolution",
+            risk="marks the migration or upgrade complete only after apply succeeds",
+            verification=("manifest bytes and managed baselines match final content",),
+            allowed_resolutions=(),
+        )
+    )
+    resolved = GovernancePlan.build(
+        target_root=plan.target_root,
+        project_state=_resolved_plan_state(plan),
+        template_version=TEMPLATE_VERSION,
+        actions=resolved_actions,
+        conflicts=(),
+    )
+    write_plan(resolved, artifact_root)
+    return resolved
+
+
 def _blocking_state_actions(
     target_root: Path,
     state: ProjectState,
@@ -763,7 +1062,7 @@ def analyze_governance(target_root: Path, artifact_root: Path) -> GovernancePlan
     elif state is ProjectState.CURRENT:
         actions = _current_keep_actions(target_root)
     elif state is ProjectState.UPGRADEABLE:
-        actions = _current_keep_actions(target_root)
+        actions = _analyze_upgrade(target_root, artifact_root)
     elif state is ProjectState.AMBIGUOUS:
         actions = _analyze_ambiguous(target_root)
     elif any((target_root / path).exists() for path in LEGACY_PATH_MAP):
