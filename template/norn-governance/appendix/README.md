@@ -1,3 +1,4 @@
+<!-- norn:managed:start appendix-governance -->
 # 附录材料
 
 本目录保存给人快速理解项目的附录材料，例如流程图、草图或说明图。
@@ -5,3 +6,4 @@
 这里的内容不作为代码实现、测试和验收的权威依据。实现时以 `norn-governance/spec/` 中的实现规格为准。
 
 附录材料只在明显过期且会误导读者时维护。
+<!-- norn:managed:end appendix-governance -->

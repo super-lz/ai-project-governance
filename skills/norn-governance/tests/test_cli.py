@@ -12,6 +12,13 @@ SKILL_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = SKILL_ROOT / "scripts" / "manage_norn_governance.py"
 EXPECTED_FILES = [
     "AGENTS.md",
+    "norn-governance/.norn.json",
+    "norn-governance/AGENTS.md",
+    "norn-governance/spec/AGENTS.md",
+    "norn-governance/spec/main-spec.md",
+    "norn-governance/appendix/README.md",
+]
+LEGACY_TARGET_FILES = [
     "norn-governance/AGENTS.md",
     "norn-governance/spec/AGENTS.md",
     "norn-governance/spec/main-spec.md",
@@ -49,7 +56,7 @@ class NornGovernanceTests(unittest.TestCase):
             target = Path(directory)
 
             dry_run = self.run_script(target)
-            self.assertEqual(dry_run["counts"], {"missing": 5, "same": 0, "conflict": 0})
+            self.assertEqual(dry_run["counts"], {"missing": 6, "same": 0, "conflict": 0})
             self.assertEqual([item["path"] for item in dry_run["files"]], EXPECTED_FILES)
 
             applied = self.run_script(target, "--apply")
@@ -58,9 +65,26 @@ class NornGovernanceTests(unittest.TestCase):
                 self.assertTrue((target / relative_path).is_file(), relative_path)
             self.assertFalse((target / "docs").exists())
             self.assertFalse((target / "norn-governance" / "plans").exists())
+            manifest = json.loads(
+                (target / "norn-governance/.norn.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["schema_version"], 1)
+            self.assertEqual(manifest["template_version"], 1)
+            self.assertEqual(
+                manifest["managed_files"]["norn-governance/spec/main-spec.md"][
+                    "ownership"
+                ],
+                "project",
+            )
+            self.assertNotIn(
+                "norn:managed",
+                (target / "norn-governance/spec/main-spec.md").read_text(
+                    encoding="utf-8"
+                ),
+            )
 
             repeated = self.run_script(target)
-            self.assertEqual(repeated["counts"], {"missing": 0, "same": 5, "conflict": 0})
+            self.assertEqual(repeated["counts"], {"missing": 0, "same": 6, "conflict": 0})
 
     def test_apply_does_not_create_duplicate_governance_beside_legacy_files(self) -> None:
         """防止旧版 docs/ 治理文件和新 Norn 规格同时成为事实源。"""
@@ -74,9 +98,11 @@ class NornGovernanceTests(unittest.TestCase):
             report = self.run_script(target, "--apply")
             results = {item["path"]: item for item in report["files"]}
 
-            self.assertEqual(report["counts"], {"missing": 1, "same": 0, "conflict": 4})
+            self.assertEqual(report["counts"], {"missing": 1, "same": 0, "conflict": 5})
             self.assertEqual(report["written"], ["AGENTS.md"])
-            for new_path, legacy_path in zip(EXPECTED_FILES[1:], LEGACY_FILES, strict=True):
+            self.assertEqual(results["norn-governance/.norn.json"]["status"], "conflict")
+            self.assertFalse((target / "norn-governance/.norn.json").exists())
+            for new_path, legacy_path in zip(LEGACY_TARGET_FILES, LEGACY_FILES, strict=True):
                 self.assertEqual(results[new_path]["status"], "conflict")
                 self.assertEqual(results[new_path]["action"], "skip")
                 self.assertEqual(results[new_path]["legacy_path"], legacy_path)
@@ -96,8 +122,8 @@ class NornGovernanceTests(unittest.TestCase):
             report = self.run_script(target)
             results = {item["path"]: item for item in report["files"]}
 
-            self.assertEqual(report["counts"], {"missing": 0, "same": 1, "conflict": 4})
-            for new_path, legacy_path in zip(EXPECTED_FILES[1:], LEGACY_FILES, strict=True):
+            self.assertEqual(report["counts"], {"missing": 0, "same": 2, "conflict": 4})
+            for new_path, legacy_path in zip(LEGACY_TARGET_FILES, LEGACY_FILES, strict=True):
                 self.assertEqual(results[new_path]["status"], "conflict")
                 self.assertEqual(results[new_path]["legacy_path"], legacy_path)
 

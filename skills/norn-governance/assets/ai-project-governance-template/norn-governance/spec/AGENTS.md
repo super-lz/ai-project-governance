@@ -1,3 +1,4 @@
+<!-- norn:managed:start specification-governance -->
 # 实现规格目录入口
 
 本目录保存权威实现规格。默认主实现规格是 `main-spec.md`；落地到具体项目时，可以重命名为更明确的业务规格文件。
@@ -91,3 +92,4 @@ norn-governance/spec/<feature-or-system>/
 ```
 
 `index.md` 保留目标、原则、关键决策和文档地图；子文档承载各自稳定系统边界。
+<!-- norn:managed:end specification-governance -->

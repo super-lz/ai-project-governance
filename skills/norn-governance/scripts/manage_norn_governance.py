@@ -7,12 +7,19 @@ import argparse
 import json
 import shutil
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+
+from norn_governance.templates import (
+    MANIFEST_PATH,
+    manifest_bytes,
+    template_manifest,
+)
 
 
 TEMPLATE_FILES = [
     "AGENTS.md",
+    MANIFEST_PATH,
     "norn-governance/AGENTS.md",
     "norn-governance/spec/AGENTS.md",
     "norn-governance/spec/main-spec.md",
@@ -190,6 +197,29 @@ def copy_missing(target_root: Path, source_root: Path, results: list[FileResult]
     return written
 
 
+def block_manifest_until_legacy_conflicts_are_resolved(
+    results: list[FileResult],
+) -> list[FileResult]:
+    has_legacy_conflict = any(
+        result.status == "conflict" and result.legacy_path for result in results
+    )
+    if not has_legacy_conflict:
+        return results
+    return [
+        replace(
+            result,
+            status="conflict",
+            action="skip",
+            fusion_guidance=(
+                "旧版 Norn 路径尚未迁移，不能写入 .norn.json 成功标记。"
+            ),
+        )
+        if result.path == MANIFEST_PATH and result.status == "missing"
+        else result
+        for result in results
+    ]
+
+
 def build_report(target_root: Path, apply: bool, results: list[FileResult], written: list[str]) -> dict:
     counts = {"missing": 0, "same": 0, "conflict": 0}
     for result in results:
@@ -256,9 +286,14 @@ def main() -> int:
         return 2
 
     try:
-        results = [analyze_file(target_root, source_root, path) for path in TEMPLATE_FILES]
+        expected_manifest = manifest_bytes(template_manifest(source_root))
+        if (source_root / MANIFEST_PATH).read_bytes() != expected_manifest:
+            raise ValueError("模板 .norn.json 与实际受管区块不一致")
+        results = block_manifest_until_legacy_conflicts_are_resolved(
+            [analyze_file(target_root, source_root, path) for path in TEMPLATE_FILES]
+        )
         written = copy_missing(target_root, source_root, results) if args.apply else []
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         print(f"初始化失败：{exc}", file=sys.stderr)
         return 1
 
