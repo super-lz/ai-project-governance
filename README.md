@@ -27,26 +27,26 @@ template/
     appendix/
       README.md
 skills/
-  init-ai-project/
+  norn-governance/
     SKILL.md
     scripts/
-      init_ai_project.py
+      manage_norn_governance.py
     assets/
       ai-project-governance-template/
 ```
 
 ## 推荐使用方式
 
-优先使用 `skills/init-ai-project/` 里的 skill 初始化目标项目。它会先分析目标项目中缺失、相同或冲突的 Norn 治理文件，默认不覆盖已有文件。
+优先使用 `$norn-governance` skill 初始化目标项目。它会先分析目标项目中缺失、相同或冲突的 Norn 治理文件，默认不覆盖已有文件。仓库源码位于 `skills/norn-governance/`。
 
 ```bash
-python3 skills/init-ai-project/scripts/init_ai_project.py --target <目标项目路径>
+python3 skills/norn-governance/scripts/manage_norn_governance.py --target <目标项目路径>
 ```
 
 确认只需要写入缺失文件后再执行：
 
 ```bash
-python3 skills/init-ai-project/scripts/init_ai_project.py --target <目标项目路径> --apply
+python3 skills/norn-governance/scripts/manage_norn_governance.py --target <目标项目路径> --apply
 ```
 
 若目标项目已有根 `AGENTS.md`、`norn-governance/` 文件或旧版 `docs/` 治理路径，脚本会报告冲突和融合建议，不会自动覆盖、自动移动或创建第二套规格。目标项目自己的其他 `docs/` 内容不属于 Norn 管理范围。
@@ -63,10 +63,10 @@ python3 skills/init-ai-project/scripts/init_ai_project.py --target <目标项目
 
 ## 本机 skill 安装
 
-仓库内 `skills/init-ai-project/` 是源码位置。需要让 Codex 本机自动发现时，将该目录同步到：
+仓库内 `skills/norn-governance/` 是源码位置。需要让 Codex 本机自动发现时，将该目录同步到：
 
 ```text
-~/.codex/skills/init-ai-project/
+~/.codex/skills/norn-governance/
 ```
 
 后续修改先更新仓库内源码，再同步到本机安装副本。

@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = SKILL_ROOT / "scripts" / "init_ai_project.py"
+SCRIPT = SKILL_ROOT / "scripts" / "manage_norn_governance.py"
 EXPECTED_FILES = [
     "AGENTS.md",
     "norn-governance/AGENTS.md",
@@ -25,7 +25,7 @@ LEGACY_FILES = [
 ]
 
 
-class InitAiProjectTests(unittest.TestCase):
+class NornGovernanceTests(unittest.TestCase):
     def run_script(self, target: Path, *arguments: str) -> dict:
         completed = subprocess.run(
             [

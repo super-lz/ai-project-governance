@@ -1,6 +1,6 @@
 ---
-name: init-ai-project
-description: 初始化 Norn AI 项目治理文件，并分析目标仓库中缺失、冲突或需要从旧 docs 路径迁移的治理文件。Use when a user asks to initialize an AI project, add Norn governance, create AGENTS.md/spec/plan governance, or analyze an existing project for missing or conflicting AI collaboration files.
+name: norn-governance
+description: 初始化、迁移或升级项目中的 Norn AI 协作治理，安全处理旧 docs 治理路径和受管区块冲突。适用于用户要求建立、迁移或更新 Norn 治理；不适用于与 Norn 无关的普通项目文档编辑。
 ---
 
 # 初始化 Norn 项目治理
@@ -15,7 +15,7 @@ description: 初始化 Norn AI 项目治理文件，并分析目标仓库中缺�
 2. 先执行 dry-run 分析：
 
 ```bash
-python3 <skill-dir>/scripts/init_ai_project.py --target <target-repo>
+python3 <skill-dir>/scripts/manage_norn_governance.py --target <target-repo>
 ```
 
 3. 查看报告：
@@ -27,7 +27,7 @@ python3 <skill-dir>/scripts/init_ai_project.py --target <target-repo>
 5. 如果用户确认写入缺失文件，执行：
 
 ```bash
-python3 <skill-dir>/scripts/init_ai_project.py --target <target-repo> --apply
+python3 <skill-dir>/scripts/manage_norn_governance.py --target <target-repo> --apply
 ```
 
 ## 冲突策略
@@ -42,7 +42,7 @@ python3 <skill-dir>/scripts/init_ai_project.py --target <target-repo> --apply
 
 ## 脚本约定
 
-`scripts/init_ai_project.py` 支持：
+`scripts/manage_norn_governance.py` 支持：
 
 - `--target <path>`：目标仓库根目录，必填。
 - `--apply`：只复制缺失文件。已有冲突文件永远不会被覆盖。
@@ -60,7 +60,7 @@ python3 <skill-dir>/scripts/init_ai_project.py --target <target-repo> --apply
 
 ## 本机安装
 
-仓库内副本是源码基准。需要让本机 Codex 可用时，将 `skills/init-ai-project/` 同步到 `~/.codex/skills/init-ai-project/`。后续修改先更新仓库内源码，再同步本机安装副本。
+仓库内副本是源码基准。需要让本机 Codex 可用时，将 `skills/norn-governance/` 同步到 `~/.codex/skills/norn-governance/`。后续修改先更新仓库内源码，再同步本机安装副本。
 
 ## 后续扩展边界
 
