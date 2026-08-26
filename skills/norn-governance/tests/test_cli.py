@@ -113,6 +113,103 @@ class NornGovernanceCliTests(unittest.TestCase):
         }
         self.assertEqual(after, before)
 
+    def test_default_scope_leaves_extra_legacy_content_out_of_plan(self) -> None:
+        """防止普通迁移在未获授权时扩大到项目自有文档。"""
+        target = self.copy_legacy_template()
+        extra = target / "docs/appendix/architecture.md"
+        extra.write_text("project appendix\n", encoding="utf-8")
+
+        report = self.analyze(target)
+
+        touched_paths = {
+            path
+            for action in report["actions"]
+            for path in (action["source_path"], action["target_path"])
+            if path
+        }
+        self.assertNotIn("docs/appendix/architecture.md", touched_paths)
+        self.assertNotIn("norn-governance/appendix/architecture.md", touched_paths)
+
+    def test_explicit_all_scope_migrates_every_governance_tree_file(self) -> None:
+        """防止用户明确要求完整迁移后仍只处理四个核心文件。"""
+        target = self.copy_legacy_template()
+        appendix_body = b"\x89PNG\r\nproject diagram\x00"
+        appendix = target / "docs/appendix/diagram.png"
+        appendix.write_bytes(appendix_body)
+        specification = target / "docs/spec/secondary.md"
+        specification.write_text("# Secondary contract\n", encoding="utf-8")
+        unrelated = target / "docs/architecture.md"
+        unrelated.write_text("outside governance trees\n", encoding="utf-8")
+        artifacts = self.workspace / "all-tree-artifacts"
+
+        report = self.run_cli_json(
+            "analyze",
+            "--target",
+            target,
+            "--artifact-dir",
+            artifacts,
+            "--include-legacy-tree",
+            "all",
+        )
+
+        self.assertEqual(report["legacy_content_scopes"], ["appendix", "spec"])
+        relocations = {
+            (action["source_path"], action["target_path"], action["kind"])
+            for action in report["actions"]
+            if action["source_path"]
+        }
+        self.assertIn(
+            (
+                "docs/appendix/diagram.png",
+                "norn-governance/appendix/diagram.png",
+                "move",
+            ),
+            relocations,
+        )
+        self.assertIn(
+            (
+                "docs/spec/secondary.md",
+                "norn-governance/spec/secondary.md",
+                "move",
+            ),
+            relocations,
+        )
+        self.assertNotIn(
+            "docs/architecture.md",
+            {
+                path
+                for action in report["actions"]
+                for path in (action["source_path"], action["target_path"])
+                if path
+            },
+        )
+
+        applied = self.run_cli_json(
+            "apply",
+            "--target",
+            target,
+            "--plan",
+            report["plan_path"],
+        )
+
+        self.assertEqual(applied["verification"]["state"], "current")
+        self.assertEqual(
+            (target / "norn-governance/appendix/diagram.png").read_bytes(),
+            appendix_body,
+        )
+        self.assertEqual(
+            (target / "norn-governance/spec/secondary.md").read_text(
+                encoding="utf-8"
+            ),
+            "# Secondary contract\n",
+        )
+        self.assertFalse(appendix.exists())
+        self.assertFalse(specification.exists())
+        self.assertEqual(
+            unrelated.read_text(encoding="utf-8"),
+            "outside governance trees\n",
+        )
+
     def test_apply_requires_plan_artifact(self) -> None:
         target = self.make_target()
 

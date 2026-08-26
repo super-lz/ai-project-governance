@@ -12,7 +12,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from norn_governance.analyzer import analyze_governance, resolve_conflicts
+from norn_governance.analyzer import (
+    analyze_governance,
+    normalize_legacy_content_scopes,
+    resolve_conflicts,
+)
 from norn_governance.executor import ApplyResult, apply_plan
 from norn_governance.models import (
     ActionKind,
@@ -48,6 +52,13 @@ def parse_args() -> argparse.Namespace:
     analyze.add_argument(
         "--artifact-dir",
         help="机器计划和渲染产物目录；必须位于目标仓库之外。",
+    )
+    analyze.add_argument(
+        "--include-legacy-tree",
+        action="append",
+        choices=("appendix", "spec", "all"),
+        default=[],
+        help="经用户明确授权后，递归迁移指定旧治理目录；可重复传入。",
     )
     _add_common_report_argument(analyze)
 
@@ -183,6 +194,7 @@ def _plan_report(
     command: str,
     plan: GovernancePlan,
     plan_path: Path,
+    legacy_content_scopes: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     action_counts = Counter(action.kind.value for action in plan.actions)
     return {
@@ -191,6 +203,7 @@ def _plan_report(
         "target": plan.target_root,
         "project_state": plan.project_state.value,
         "template_version": plan.template_version,
+        "legacy_content_scopes": list(legacy_content_scopes),
         "plan_path": str(plan_path),
         "plan_sha256": plan.plan_sha256,
         "executable": not plan.conflicts
@@ -260,6 +273,8 @@ def print_human_plan_report(report: Mapping[str, Any]) -> None:
     print(f"{BRAND} 分析报告")
     print(f"目标：{report['target']}")
     print(f"计划：{report['plan_path']}")
+    if report["legacy_content_scopes"]:
+        print("显式旧目录范围：" + "、".join(report["legacy_content_scopes"]))
     print("\n状态")
     print(
         f"  - {report['project_state']}；"
@@ -348,8 +363,20 @@ def _run_analyze(args: argparse.Namespace, target: Path) -> dict[str, Any]:
         if args.artifact_dir
         else Path(tempfile.mkdtemp(prefix="norn-governance-"))
     )
-    plan = analyze_governance(target, artifact_root)
-    return _plan_report("analyze", plan, artifact_root / "plan.json")
+    legacy_content_scopes = normalize_legacy_content_scopes(
+        args.include_legacy_tree
+    )
+    plan = analyze_governance(
+        target,
+        artifact_root,
+        legacy_content_scopes=legacy_content_scopes,
+    )
+    return _plan_report(
+        "analyze",
+        plan,
+        artifact_root / "plan.json",
+        legacy_content_scopes,
+    )
 
 
 def _run_resolve(args: argparse.Namespace, target: Path) -> dict[str, Any]:

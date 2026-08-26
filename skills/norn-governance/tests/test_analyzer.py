@@ -523,6 +523,94 @@ class GovernanceAnalyzerTests(unittest.TestCase):
         duplicate_delete = self.action_for(plan, "docs/AGENTS.md", ActionKind.DELETE)
         self.assertEqual(duplicate_delete.output_sha256, None)
 
+    def test_explicit_tree_reports_target_parent_collision_during_analysis(
+        self,
+    ) -> None:
+        """防止嵌套目标父路径为文件时生成表面可执行、实际必失败的计划。"""
+        target = self.copy_current_template()
+        self.write(target, "docs/appendix/diagrams/flow.md", "# Flow\n")
+        self.write(
+            target,
+            "norn-governance/appendix/diagrams",
+            "this path blocks the destination directory\n",
+        )
+
+        plan = analyze_governance(
+            target,
+            self.artifacts(),
+            legacy_content_scopes=("appendix",),
+        )
+
+        action = self.action_for(
+            plan,
+            "norn-governance/appendix/diagrams/flow.md",
+        )
+        self.assertEqual(action.kind, ActionKind.CONFLICT)
+        self.assertIn("parent", action.reason)
+        self.assertFalse(action.allowed_resolutions)
+
+    def test_explicit_tree_does_not_overwrite_different_project_content(self) -> None:
+        target = self.copy_current_template()
+        self.write(target, "docs/appendix/guide.md", "legacy guide\n")
+        self.write(
+            target,
+            "norn-governance/appendix/guide.md",
+            "current guide\n",
+        )
+
+        plan = analyze_governance(
+            target,
+            self.artifacts(),
+            legacy_content_scopes=("appendix",),
+        )
+
+        action = self.action_for(plan, "norn-governance/appendix/guide.md")
+        self.assertEqual(action.kind, ActionKind.CONFLICT)
+        self.assertEqual(
+            action.allowed_resolutions,
+            (ConflictChoice.SEMANTIC_MERGE,),
+        )
+        self.assertEqual(
+            (target / "norn-governance/appendix/guide.md").read_text(
+                encoding="utf-8"
+            ),
+            "current guide\n",
+        )
+
+    def test_explicit_tree_blocks_symlinked_source(self) -> None:
+        target = self.copy_current_template()
+        outside = self.workspace / "outside-appendix.md"
+        outside.write_text("outside\n", encoding="utf-8")
+        source = target / "docs/appendix/external.md"
+        source.parent.mkdir(parents=True)
+        source.symlink_to(outside)
+
+        plan = analyze_governance(
+            target,
+            self.artifacts(),
+            legacy_content_scopes=("appendix",),
+        )
+
+        action = self.action_for(plan, "norn-governance/appendix/external.md")
+        self.assertEqual(action.kind, ActionKind.CONFLICT)
+        self.assertIn("unsupported filesystem type", action.reason)
+        self.assertFalse(action.allowed_resolutions)
+
+    def test_explicit_empty_legacy_tree_is_reported_as_mixed_cleanup(self) -> None:
+        """防止只剩空旧目录时把删除计划误报为 current 无变更。"""
+        target = self.copy_current_template()
+        (target / "docs/appendix").mkdir(parents=True)
+
+        plan = analyze_governance(
+            target,
+            self.artifacts(),
+            legacy_content_scopes=("appendix",),
+        )
+
+        self.assertEqual(plan.project_state, ProjectState.MIXED)
+        self.action_for(plan, "docs/appendix", ActionKind.DELETE)
+        self.action_for(plan, "docs", ActionKind.DELETE)
+
     def test_current_and_legacy_paths_are_mixed(self) -> None:
         target = self.copy_current_template()
         legacy = self.legacy_root / "docs/spec/main-spec.md"

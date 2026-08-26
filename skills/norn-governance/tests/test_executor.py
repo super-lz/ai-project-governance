@@ -211,6 +211,112 @@ class GovernanceExecutorTests(unittest.TestCase):
         self.assertTrue((target / "norn-governance/.norn.json").is_file())
         self.assertFalse((target / "norn-governance/plans").exists())
 
+    def test_explicit_duplicate_content_is_deduplicated_and_empty_legacy_tree_removed(
+        self,
+    ) -> None:
+        """防止相同目标去重后遗留空的旧 appendix 目录。"""
+        target = self.make_target()
+        shutil.copytree(asset_template_root(), target, dirs_exist_ok=True)
+        body = b"identical diagram bytes\x00"
+        source = target / "docs/appendix/diagram.bin"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(body)
+        destination = target / "norn-governance/appendix/diagram.bin"
+        destination.write_bytes(body)
+        artifacts = self.artifacts()
+
+        plan = analyze_governance(
+            target,
+            artifacts,
+            legacy_content_scopes=("appendix",),
+        )
+
+        self.assertEqual(plan.project_state, ProjectState.MIXED)
+        self.assertTrue(
+            any(
+                action.kind is ActionKind.KEEP
+                and action.target_path == "norn-governance/appendix/diagram.bin"
+                for action in plan.actions
+            )
+        )
+        self.assertTrue(
+            any(
+                action.kind is ActionKind.DELETE
+                and action.target_path == "docs/appendix/diagram.bin"
+                for action in plan.actions
+            )
+        )
+
+        result = apply_plan(artifacts / "plan.json")
+
+        self.assertEqual(result.verification.state, ProjectState.CURRENT)
+        self.assertEqual(destination.read_bytes(), body)
+        self.assertFalse((target / "docs").exists())
+
+    def test_current_project_can_explicitly_finish_leftover_nested_appendix_migration(
+        self,
+    ) -> None:
+        target = self.make_target()
+        shutil.copytree(asset_template_root(), target, dirs_exist_ok=True)
+        source = target / "docs/appendix/diagrams/runtime.md"
+        source.parent.mkdir(parents=True)
+        source.write_text("# Runtime diagram\n", encoding="utf-8")
+        artifacts = self.artifacts()
+
+        plan = analyze_governance(
+            target,
+            artifacts,
+            legacy_content_scopes=("appendix",),
+        )
+
+        self.assertEqual(plan.project_state, ProjectState.MIXED)
+        move = next(
+            action
+            for action in plan.actions
+            if action.target_path
+            == "norn-governance/appendix/diagrams/runtime.md"
+        )
+        self.assertEqual(move.kind, ActionKind.MOVE)
+        self.assertEqual(move.source_before.sha256, move.output_sha256)
+
+        result = apply_plan(artifacts / "plan.json")
+
+        self.assertEqual(result.verification.state, ProjectState.CURRENT)
+        self.assertEqual(
+            (
+                target
+                / "norn-governance/appendix/diagrams/runtime.md"
+            ).read_text(encoding="utf-8"),
+            "# Runtime diagram\n",
+        )
+        self.assertFalse((target / "docs").exists())
+
+    def test_explicit_tree_source_hash_change_invalidates_plan(self) -> None:
+        """证明显式授权决定范围，Hash 仍负责阻止确认后的内容变化。"""
+        target = self.make_target()
+        shutil.copytree(asset_template_root(), target, dirs_exist_ok=True)
+        source = target / "docs/appendix/guide.md"
+        source.parent.mkdir(parents=True)
+        source.write_text("analyzed bytes\n", encoding="utf-8")
+        artifacts = self.artifacts()
+        analyze_governance(
+            target,
+            artifacts,
+            legacy_content_scopes=("appendix",),
+        )
+        source.write_text("changed after confirmation\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(PlanPreconditionError, "fingerprint changed"):
+            apply_plan(artifacts / "plan.json")
+
+        self.assertEqual(
+            source.read_text(encoding="utf-8"),
+            "changed after confirmation\n",
+        )
+        self.assertFalse(
+            (target / "norn-governance/appendix/guide.md").exists()
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

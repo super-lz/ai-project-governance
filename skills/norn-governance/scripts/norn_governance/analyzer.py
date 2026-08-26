@@ -41,6 +41,10 @@ LEGACY_PATH_MAP = {
     "docs/spec/main-spec.md": "norn-governance/spec/main-spec.md",
     "docs/appendix/README.md": "norn-governance/appendix/README.md",
 }
+LEGACY_CONTENT_ROOTS = {
+    "appendix": ("docs/appendix", "norn-governance/appendix"),
+    "spec": ("docs/spec", "norn-governance/spec"),
+}
 GOVERNANCE_REFERENCE_MAP = {
     "docs/AGENTS.md": "norn-governance/AGENTS.md",
     "docs/spec/AGENTS.md": "norn-governance/spec/AGENTS.md",
@@ -56,6 +60,18 @@ GOVERNANCE_DIRECTORY_PATHS = {
     "docs/spec",
     "docs/appendix",
 }
+
+
+def normalize_legacy_content_scopes(scopes: Iterable[str]) -> tuple[str, ...]:
+    normalized: set[str] = set()
+    for scope in scopes:
+        if scope == "all":
+            normalized.update(LEGACY_CONTENT_ROOTS)
+        elif scope in LEGACY_CONTENT_ROOTS:
+            normalized.add(scope)
+        else:
+            raise ValueError(f"unsupported legacy content scope: {scope}")
+    return tuple(scope for scope in LEGACY_CONTENT_ROOTS if scope in normalized)
 
 
 def fingerprint_path(path: Path) -> PathFingerprint:
@@ -241,7 +257,9 @@ def _ownership_for(relative_path: str) -> OwnershipKind:
         return OwnershipKind.MANAGED
     if relative_path in MANAGED_PATHS:
         return MANAGED_PATHS[relative_path][0]
-    if relative_path.endswith("main-spec.md"):
+    if relative_path.startswith(
+        ("norn-governance/spec/", "norn-governance/appendix/")
+    ):
         return OwnershipKind.PROJECT
     return OwnershipKind.MANAGED
 
@@ -355,9 +373,29 @@ def _plan_output(
     evidence: Iterable[str],
     source_path: str | None = None,
     allow_existing_replace: bool = False,
+    byte_identical_move: bool = False,
 ) -> list[PlannedAction]:
     target = target_root / target_path
     source = target_root / source_path if source_path else None
+    current_parent = target_root
+    for part in Path(target_path).parts[:-1]:
+        current_parent /= part
+        parent_fingerprint = fingerprint_path(current_parent)
+        if parent_fingerprint.kind not in {PathKind.MISSING, PathKind.DIRECTORY}:
+            return [
+                _conflict_action(
+                    target_root,
+                    target_path,
+                    source_path=source_path,
+                    reason="target parent path is not a regular directory",
+                    evidence=(
+                        *evidence,
+                        "parent "
+                        f"{current_parent.relative_to(target_root).as_posix()} "
+                        f"has kind {parent_fingerprint.kind.value}",
+                    ),
+                )
+            ]
     target_before = fingerprint_path(target)
     if target_before.kind not in {PathKind.MISSING, PathKind.FILE}:
         return [
@@ -407,9 +445,15 @@ def _plan_output(
         ]
 
     is_merge = source_path is not None or allow_existing_replace
-    action_id = _action_id("merge" if is_merge else "create", target_path)
+    kind = (
+        ActionKind.MOVE
+        if byte_identical_move
+        else ActionKind.MERGE
+        if is_merge
+        else ActionKind.CREATE
+    )
+    action_id = _action_id(kind.value, target_path)
     output_sha256 = _write_artifact(artifact_root, action_id, body)
-    kind = ActionKind.MERGE if is_merge else ActionKind.CREATE
     return [
         PlannedAction(
             action_id=action_id,
@@ -459,7 +503,14 @@ def _projected_directory_is_empty(
 def _append_directory_cleanup(
     target_root: Path,
     actions: list[PlannedAction],
+    explicit_source_directories: Iterable[str] = (),
 ) -> None:
+    explicit_source_directories = tuple(explicit_source_directories)
+    explicit_roots = {
+        directory
+        for directory in explicit_source_directories
+        if directory in {"docs/spec", "docs/appendix"}
+    }
     removable_paths = {
         action.source_path
         for action in actions
@@ -468,8 +519,31 @@ def _append_directory_cleanup(
     removable_paths.update(
         action.target_path
         for action in actions
-        if action.kind is ActionKind.DELETE and action.target_path in LEGACY_PATH_MAP
+        if action.kind is ActionKind.DELETE
+        and (
+            action.target_path in LEGACY_PATH_MAP
+            or any(
+                action.target_path.startswith(f"{root}/")
+                for root in explicit_roots
+            )
+        )
     )
+    for directory in sorted(
+        set(explicit_source_directories),
+        key=lambda path: len(Path(path).parts),
+        reverse=True,
+    ):
+        if directory in {"docs/spec", "docs/appendix"}:
+            continue
+        if _projected_directory_is_empty(target_root, directory, removable_paths):
+            actions.append(
+                _delete_action(
+                    target_root,
+                    directory,
+                    reason="remove an empty explicitly migrated legacy subdirectory",
+                )
+            )
+            removable_paths.add(directory)
     for directory in ("docs/spec", "docs/appendix"):
         if _projected_directory_is_empty(target_root, directory, removable_paths):
             actions.append(
@@ -488,6 +562,84 @@ def _append_directory_cleanup(
                 reason="remove legacy docs directory because it becomes empty",
             )
         )
+
+
+def _analyze_explicit_legacy_content(
+    target_root: Path,
+    artifact_root: Path,
+    scopes: tuple[str, ...],
+) -> tuple[list[PlannedAction], set[str]]:
+    actions: list[PlannedAction] = []
+    source_directories: set[str] = set()
+
+    def visit(
+        source_directory: Path,
+        source_root: Path,
+        target_root_path: Path,
+    ) -> None:
+        source_relative = source_directory.relative_to(target_root).as_posix()
+        source_directories.add(source_relative)
+        for child in sorted(source_directory.iterdir(), key=lambda path: path.name):
+            child_relative = child.relative_to(target_root).as_posix()
+            relative_inside_tree = child.relative_to(source_root)
+            target_relative = (target_root_path / relative_inside_tree).as_posix()
+            if child_relative in LEGACY_PATH_MAP:
+                continue
+            fingerprint = fingerprint_path(child)
+            if fingerprint.kind is PathKind.DIRECTORY:
+                visit(child, source_root, target_root_path)
+            elif fingerprint.kind is PathKind.FILE:
+                actions.extend(
+                    _plan_output(
+                        target_root,
+                        artifact_root,
+                        source_path=child_relative,
+                        target_path=target_relative,
+                        body=child.read_bytes(),
+                        reason=(
+                            "move explicitly requested legacy governance content "
+                            "without rewriting bytes"
+                        ),
+                        evidence=(
+                            "user explicitly requested recursive migration of "
+                            f"{source_root.relative_to(target_root).as_posix()}/",
+                        ),
+                        byte_identical_move=True,
+                    )
+                )
+            else:
+                actions.append(
+                    _conflict_action(
+                        target_root,
+                        target_relative,
+                        source_path=child_relative,
+                        reason=(
+                            "explicit legacy content has an unsupported "
+                            "filesystem type"
+                        ),
+                        evidence=(f"source kind is {fingerprint.kind.value}",),
+                    )
+                )
+
+    for scope in scopes:
+        source_relative, target_relative = LEGACY_CONTENT_ROOTS[scope]
+        source_root = target_root / source_relative
+        if not source_root.exists() and not source_root.is_symlink():
+            continue
+        fingerprint = fingerprint_path(source_root)
+        if fingerprint.kind is not PathKind.DIRECTORY:
+            actions.append(
+                _conflict_action(
+                    target_root,
+                    target_relative,
+                    source_path=source_relative,
+                    reason="explicit legacy content root is not a regular directory",
+                    evidence=(f"source kind is {fingerprint.kind.value}",),
+                )
+            )
+            continue
+        visit(source_root, source_root, Path(target_relative))
+    return actions, source_directories
 
 
 def _analyze_uninitialized(
@@ -585,6 +737,7 @@ def _root_actions(
 def _analyze_legacy_or_mixed(
     target_root: Path,
     artifact_root: Path,
+    legacy_content_scopes: tuple[str, ...] = (),
 ) -> list[PlannedAction]:
     actions: list[PlannedAction] = []
     structural_evidence = _has_structural_legacy_evidence(target_root)
@@ -691,6 +844,12 @@ def _analyze_legacy_or_mixed(
                 )
             )
 
+    explicit_actions, source_directories = _analyze_explicit_legacy_content(
+        target_root,
+        artifact_root,
+        legacy_content_scopes,
+    )
+    actions.extend(explicit_actions)
     if not any(action.kind is ActionKind.CONFLICT for action in actions):
         actions.extend(
             _plan_output(
@@ -702,7 +861,7 @@ def _analyze_legacy_or_mixed(
                 evidence=("all governed content actions are deterministic",),
             )
         )
-    _append_directory_cleanup(target_root, actions)
+    _append_directory_cleanup(target_root, actions, source_directories)
     return actions
 
 
@@ -1047,9 +1206,15 @@ def _blocking_state_actions(
     ]
 
 
-def analyze_governance(target_root: Path, artifact_root: Path) -> GovernancePlan:
+def analyze_governance(
+    target_root: Path,
+    artifact_root: Path,
+    *,
+    legacy_content_scopes: Iterable[str] = (),
+) -> GovernancePlan:
     target_root = Path(target_root).resolve()
     artifact_root = Path(artifact_root).resolve()
+    normalized_scopes = normalize_legacy_content_scopes(legacy_content_scopes)
     if not target_root.is_dir():
         raise ValueError(f"target root is not a directory: {target_root}")
     if artifact_root == target_root or artifact_root.is_relative_to(target_root):
@@ -1057,6 +1222,7 @@ def analyze_governance(target_root: Path, artifact_root: Path) -> GovernancePlan
     artifact_root.mkdir(parents=True, exist_ok=True)
     state = classify_project(target_root)
 
+    handled_explicit_content = False
     if state is ProjectState.UNINITIALIZED:
         actions = _analyze_uninitialized(target_root, artifact_root)
     elif state is ProjectState.CURRENT:
@@ -1066,11 +1232,33 @@ def analyze_governance(target_root: Path, artifact_root: Path) -> GovernancePlan
     elif state is ProjectState.AMBIGUOUS:
         actions = _analyze_ambiguous(target_root)
     elif any((target_root / path).exists() for path in LEGACY_PATH_MAP):
-        actions = _analyze_legacy_or_mixed(target_root, artifact_root)
+        actions = _analyze_legacy_or_mixed(
+            target_root,
+            artifact_root,
+            normalized_scopes,
+        )
+        handled_explicit_content = True
     elif state is ProjectState.MIXED:
-        actions = _analyze_legacy_or_mixed(target_root, artifact_root)
+        actions = _analyze_legacy_or_mixed(
+            target_root,
+            artifact_root,
+            normalized_scopes,
+        )
+        handled_explicit_content = True
     else:
         actions = _blocking_state_actions(target_root, state)
+
+    explicit_actions: list[PlannedAction] = []
+    if normalized_scopes and not handled_explicit_content:
+        explicit_actions, source_directories = _analyze_explicit_legacy_content(
+            target_root,
+            artifact_root,
+            normalized_scopes,
+        )
+        first_explicit_action = len(actions)
+        actions.extend(explicit_actions)
+        _append_directory_cleanup(target_root, actions, source_directories)
+        explicit_actions = actions[first_explicit_action:]
 
     if any(action.kind is ActionKind.CONFLICT for action in actions):
         effective_state = (
@@ -1079,7 +1267,21 @@ def analyze_governance(target_root: Path, artifact_root: Path) -> GovernancePlan
             else ProjectState.CONFLICT
         )
     else:
-        effective_state = state
+        effective_state = (
+            ProjectState.MIXED
+            if state is ProjectState.CURRENT
+            and any(
+                action.kind
+                in {
+                    ActionKind.CREATE,
+                    ActionKind.MOVE,
+                    ActionKind.MERGE,
+                    ActionKind.DELETE,
+                }
+                for action in explicit_actions
+            )
+            else state
+        )
     conflicts = tuple(
         f"{action.target_path}: {action.reason}"
         for action in actions
