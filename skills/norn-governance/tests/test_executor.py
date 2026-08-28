@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import stat
 import sys
 import tempfile
 import unittest
@@ -14,10 +15,10 @@ sys.path.insert(0, str(SCRIPTS_ROOT))
 from norn_governance.analyzer import analyze_governance  # noqa: E402
 import norn_governance.executor as executor_module  # noqa: E402
 from norn_governance.executor import (  # noqa: E402
-    PlanArtifactError,
-    PlanConflictError,
-    PlanPreconditionError,
-    apply_plan,
+    TransactionArtifactError,
+    TransactionConflictError,
+    TransactionPreconditionError,
+    apply_transaction,
 )
 from norn_governance.models import ActionKind, ProjectState  # noqa: E402
 from norn_governance.templates import (  # noqa: E402
@@ -49,30 +50,30 @@ class GovernanceExecutorTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
 
-    def legacy_plan(self) -> tuple[Path, Path]:
+    def legacy_transaction(self) -> tuple[Path, Path]:
         target = self.make_target()
         shutil.copytree(legacy_template_root(), target, dirs_exist_ok=True)
         artifacts = self.artifacts()
         analyze_governance(target, artifacts)
-        return target, artifacts / "plan.json"
+        return target, artifacts / "transaction.json"
 
     def test_apply_rejects_source_changed_after_analysis(self) -> None:
-        target, plan_path = self.legacy_plan()
+        target, transaction_path = self.legacy_transaction()
         self.write(target, "docs/spec/main-spec.md", "changed after confirmation\n")
 
-        with self.assertRaisesRegex(PlanPreconditionError, "fingerprint changed"):
-            apply_plan(plan_path)
+        with self.assertRaisesRegex(TransactionPreconditionError, "fingerprint changed"):
+            apply_transaction(transaction_path)
 
         self.assertTrue((target / "docs/spec/main-spec.md").is_file())
         self.assertFalse((target / "norn-governance/spec/main-spec.md").exists())
 
     def test_corrupt_rendered_artifact_writes_nothing_and_keeps_sources(self) -> None:
-        target, plan_path = self.legacy_plan()
-        rendered = next((plan_path.parent / "rendered").glob("*.content"))
+        target, transaction_path = self.legacy_transaction()
+        rendered = next((transaction_path.parent / "rendered").glob("*.content"))
         rendered.write_text("corrupted\n", encoding="utf-8")
 
-        with self.assertRaisesRegex(PlanArtifactError, "artifact hash mismatch"):
-            apply_plan(plan_path)
+        with self.assertRaisesRegex(TransactionArtifactError, "artifact hash mismatch"):
+            apply_transaction(transaction_path)
 
         self.assertTrue((target / "docs/AGENTS.md").is_file())
         self.assertTrue((target / "docs/spec/main-spec.md").is_file())
@@ -86,25 +87,25 @@ class GovernanceExecutorTests(unittest.TestCase):
         artifacts = self.artifacts()
         analyze_governance(target, artifacts)
 
-        with self.assertRaisesRegex(PlanConflictError, "unresolved conflict"):
-            apply_plan(artifacts / "plan.json")
+        with self.assertRaisesRegex(TransactionConflictError, "unresolved conflict"):
+            apply_transaction(artifacts / "transaction.json")
 
         self.assertFalse((target / "norn-governance").exists())
 
     def test_parent_symlink_added_after_analysis_is_rejected(self) -> None:
-        target, plan_path = self.legacy_plan()
+        target, transaction_path = self.legacy_transaction()
         outside = self.workspace / "outside"
         outside.mkdir()
         (target / "norn-governance").symlink_to(outside, target_is_directory=True)
 
-        with self.assertRaisesRegex(PlanPreconditionError, "symlink"):
-            apply_plan(plan_path)
+        with self.assertRaisesRegex(TransactionPreconditionError, "symlink"):
+            apply_transaction(transaction_path)
 
         self.assertTrue((target / "docs/AGENTS.md").exists())
         self.assertEqual(tuple(outside.iterdir()), ())
 
     def test_mid_write_failure_keeps_every_legacy_source(self) -> None:
-        target, plan_path = self.legacy_plan()
+        target, transaction_path = self.legacy_transaction()
         real_replace = __import__("os").replace
         replace_count = 0
 
@@ -119,7 +120,7 @@ class GovernanceExecutorTests(unittest.TestCase):
             "norn_governance.executor.os.replace", side_effect=fail_second_replace
         ):
             with self.assertRaisesRegex(OSError, "injected target replace failure"):
-                apply_plan(plan_path)
+                apply_transaction(transaction_path)
 
         for relative_path in (
             "docs/AGENTS.md",
@@ -131,7 +132,7 @@ class GovernanceExecutorTests(unittest.TestCase):
         self.assertFalse((target / "norn-governance/.norn.json").exists())
 
     def test_source_changed_during_target_writes_is_not_deleted(self) -> None:
-        target, plan_path = self.legacy_plan()
+        target, transaction_path = self.legacy_transaction()
         real_atomic_replace = executor_module._atomic_replace_target
         mutated = False
 
@@ -152,9 +153,9 @@ class GovernanceExecutorTests(unittest.TestCase):
             side_effect=replace_then_mutate_source,
         ):
             with self.assertRaisesRegex(
-                PlanPreconditionError, "fingerprint changed before deletion"
+                TransactionPreconditionError, "fingerprint changed before deletion"
             ):
-                apply_plan(plan_path)
+                apply_transaction(transaction_path)
 
         self.assertIn(
             "concurrent edit",
@@ -163,15 +164,15 @@ class GovernanceExecutorTests(unittest.TestCase):
         self.assertFalse((target / "norn-governance/.norn.json").exists())
 
     def test_complete_migration_preserves_other_docs_and_is_idempotent(self) -> None:
-        target, plan_path = self.legacy_plan()
+        target, transaction_path = self.legacy_transaction()
         self.write(target, "docs/architecture.md", "project-owned\n")
-        artifacts = plan_path.parent
+        artifacts = transaction_path.parent
         analyze_governance(target, artifacts)
         original_spec = (target / "docs/spec/main-spec.md").read_text(
             encoding="utf-8"
         )
 
-        result = apply_plan(plan_path)
+        result = apply_transaction(transaction_path)
 
         expected_spec = original_spec
         for old, new in {
@@ -194,10 +195,10 @@ class GovernanceExecutorTests(unittest.TestCase):
         self.assertFalse((target / "docs/spec").exists())
         self.assertEqual(result.verification.state, ProjectState.CURRENT)
         second_artifacts = self.workspace / "second-analysis"
-        second_plan = analyze_governance(target, second_artifacts)
-        self.assertEqual(second_plan.project_state, ProjectState.CURRENT)
+        second_transaction = analyze_governance(target, second_artifacts)
+        self.assertEqual(second_transaction.project_state, ProjectState.CURRENT)
         self.assertTrue(
-            all(action.kind is ActionKind.KEEP for action in second_plan.actions)
+            all(action.kind is ActionKind.KEEP for action in second_transaction.actions)
         )
 
     def test_empty_project_initialization_applies_to_current_state(self) -> None:
@@ -205,11 +206,22 @@ class GovernanceExecutorTests(unittest.TestCase):
         artifacts = self.artifacts()
         analyze_governance(target, artifacts)
 
-        result = apply_plan(artifacts / "plan.json")
+        result = apply_transaction(artifacts / "transaction.json")
 
         self.assertEqual(result.verification.state, ProjectState.CURRENT)
         self.assertTrue((target / "norn-governance/.norn.json").is_file())
         self.assertFalse((target / "norn-governance/plans").exists())
+
+    def test_migration_preserves_source_file_mode_on_supported_python(self) -> None:
+        target, transaction_path = self.legacy_transaction()
+        source = target / "docs/spec/main-spec.md"
+        source.chmod(0o640)
+        analyze_governance(target, transaction_path.parent)
+
+        apply_transaction(transaction_path)
+
+        destination = target / "norn-governance/spec/main-spec.md"
+        self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o640)
 
     def test_explicit_duplicate_content_is_deduplicated_and_empty_legacy_tree_removed(
         self,
@@ -225,29 +237,29 @@ class GovernanceExecutorTests(unittest.TestCase):
         destination.write_bytes(body)
         artifacts = self.artifacts()
 
-        plan = analyze_governance(
+        transaction = analyze_governance(
             target,
             artifacts,
             legacy_content_scopes=("appendix",),
         )
 
-        self.assertEqual(plan.project_state, ProjectState.MIXED)
+        self.assertEqual(transaction.project_state, ProjectState.MIXED)
         self.assertTrue(
             any(
                 action.kind is ActionKind.KEEP
                 and action.target_path == "norn-governance/appendix/diagram.bin"
-                for action in plan.actions
+                for action in transaction.actions
             )
         )
         self.assertTrue(
             any(
                 action.kind is ActionKind.DELETE
                 and action.target_path == "docs/appendix/diagram.bin"
-                for action in plan.actions
+                for action in transaction.actions
             )
         )
 
-        result = apply_plan(artifacts / "plan.json")
+        result = apply_transaction(artifacts / "transaction.json")
 
         self.assertEqual(result.verification.state, ProjectState.CURRENT)
         self.assertEqual(destination.read_bytes(), body)
@@ -263,23 +275,23 @@ class GovernanceExecutorTests(unittest.TestCase):
         source.write_text("# Runtime diagram\n", encoding="utf-8")
         artifacts = self.artifacts()
 
-        plan = analyze_governance(
+        transaction = analyze_governance(
             target,
             artifacts,
             legacy_content_scopes=("appendix",),
         )
 
-        self.assertEqual(plan.project_state, ProjectState.MIXED)
+        self.assertEqual(transaction.project_state, ProjectState.MIXED)
         move = next(
             action
-            for action in plan.actions
+            for action in transaction.actions
             if action.target_path
             == "norn-governance/appendix/diagrams/runtime.md"
         )
         self.assertEqual(move.kind, ActionKind.MOVE)
         self.assertEqual(move.source_before.sha256, move.output_sha256)
 
-        result = apply_plan(artifacts / "plan.json")
+        result = apply_transaction(artifacts / "transaction.json")
 
         self.assertEqual(result.verification.state, ProjectState.CURRENT)
         self.assertEqual(
@@ -291,7 +303,7 @@ class GovernanceExecutorTests(unittest.TestCase):
         )
         self.assertFalse((target / "docs").exists())
 
-    def test_explicit_tree_source_hash_change_invalidates_plan(self) -> None:
+    def test_explicit_tree_source_hash_change_invalidates_transaction(self) -> None:
         """证明显式授权决定范围，Hash 仍负责阻止确认后的内容变化。"""
         target = self.make_target()
         shutil.copytree(asset_template_root(), target, dirs_exist_ok=True)
@@ -306,8 +318,8 @@ class GovernanceExecutorTests(unittest.TestCase):
         )
         source.write_text("changed after confirmation\n", encoding="utf-8")
 
-        with self.assertRaisesRegex(PlanPreconditionError, "fingerprint changed"):
-            apply_plan(artifacts / "plan.json")
+        with self.assertRaisesRegex(TransactionPreconditionError, "fingerprint changed"):
+            apply_transaction(artifacts / "transaction.json")
 
         self.assertEqual(
             source.read_text(encoding="utf-8"),

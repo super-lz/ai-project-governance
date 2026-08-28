@@ -109,13 +109,16 @@ class ManagedMarkdownTests(unittest.TestCase):
 
 class TemplateManifestTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.repository_root = Path(__file__).resolve().parents[3]
-        self.template_root = self.repository_root / "template"
         self.asset_root = (
             Path(__file__).resolve().parents[1]
             / "assets"
             / "ai-project-governance-template"
         )
+        repository_template = Path(__file__).resolve().parents[3] / "template"
+        self.repository_template = (
+            repository_template if repository_template.is_dir() else None
+        )
+        self.template_root = self.repository_template or self.asset_root
 
     def test_template_manifest_records_real_managed_block_hashes(self) -> None:
         manifest = template_manifest(self.template_root)
@@ -149,13 +152,15 @@ class TemplateManifestTests(unittest.TestCase):
         self.assertEqual(stored.to_dict(), computed.to_dict())
 
     def test_repository_template_and_skill_asset_are_byte_identical(self) -> None:
+        if self.repository_template is None:
+            self.skipTest("canonical repository template is not installed with the Skill")
         relative_paths = (*MANAGED_PATHS, "norn-governance/.norn.json")
 
         for relative_path in relative_paths:
             with self.subTest(path=relative_path):
                 self.assertEqual(
                     (self.asset_root / relative_path).read_bytes(),
-                    (self.template_root / relative_path).read_bytes(),
+                    (self.repository_template / relative_path).read_bytes(),
                 )
 
 

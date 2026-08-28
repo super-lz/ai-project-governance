@@ -17,13 +17,13 @@ from norn_governance.analyzer import (
     normalize_legacy_content_scopes,
     resolve_conflicts,
 )
-from norn_governance.executor import ApplyResult, apply_plan
+from norn_governance.executor import ApplyResult, apply_transaction
 from norn_governance.models import (
     ActionKind,
     ConflictResolution,
-    GovernancePlan,
-    load_plan,
-    write_plan,
+    GovernanceTransaction,
+    load_transaction,
+    write_transaction,
 )
 
 
@@ -46,12 +46,12 @@ def parse_args() -> argparse.Namespace:
 
     analyze = commands.add_parser(
         "analyze",
-        help="只读分析项目状态并生成带指纹的临时执行计划。",
+        help="只读分析项目结构并生成带指纹的临时治理事务。",
     )
     analyze.add_argument("--target", required=True, help="目标仓库根目录。")
     analyze.add_argument(
         "--artifact-dir",
-        help="机器计划和渲染产物目录；必须位于目标仓库之外。",
+        help="治理事务和渲染产物目录；必须位于目标仓库之外。",
     )
     analyze.add_argument(
         "--include-legacy-tree",
@@ -64,10 +64,12 @@ def parse_args() -> argparse.Namespace:
 
     resolve = commands.add_parser(
         "resolve",
-        help="将明确的冲突选择绑定到已有计划。",
+        help="将明确的冲突选择绑定到已有治理事务。",
     )
     resolve.add_argument("--target", required=True, help="目标仓库根目录。")
-    resolve.add_argument("--plan", required=True, help="待解析的 plan.json。")
+    resolve.add_argument(
+        "--transaction", required=True, help="待解析的临时 transaction.json。"
+    )
     resolve.add_argument(
         "--resolutions",
         required=True,
@@ -77,10 +79,14 @@ def parse_args() -> argparse.Namespace:
 
     apply = commands.add_parser(
         "apply",
-        help="重新验证计划、项目指纹和渲染产物后执行。",
+        help="重新验证治理事务、项目指纹和渲染产物后执行。",
     )
     apply.add_argument("--target", required=True, help="目标仓库根目录。")
-    apply.add_argument("--plan", required=True, help="已确认且无冲突的 plan.json。")
+    apply.add_argument(
+        "--transaction",
+        required=True,
+        help="已确认且无冲突的临时 transaction.json。",
+    )
     _add_common_report_argument(apply)
     return parser.parse_args()
 
@@ -94,14 +100,15 @@ def _canonical_target(raw_target: str) -> Path:
     return target
 
 
-def _require_plan_target(plan: GovernancePlan, target: Path) -> None:
-    if Path(plan.target_root) != target:
+def _require_transaction_target(transaction: GovernanceTransaction, target: Path) -> None:
+    if Path(transaction.target_root) != target:
         raise ValueError(
-            f"target does not match plan: target={target}, plan={plan.target_root}"
+            "target does not match transaction: "
+            f"target={target}, transaction={transaction.target_root}"
         )
 
 
-def _plan_sections(plan: GovernancePlan) -> dict[str, list[dict[str, Any]]]:
+def _transaction_sections(transaction: GovernanceTransaction) -> dict[str, list[dict[str, Any]]]:
     ownership_evidence: list[dict[str, Any]] = []
     relocations: list[dict[str, Any]] = []
     rule_upgrades: list[dict[str, Any]] = []
@@ -110,7 +117,7 @@ def _plan_sections(plan: GovernancePlan) -> dict[str, list[dict[str, Any]]]:
     risks: list[dict[str, Any]] = []
     verification: list[dict[str, Any]] = []
 
-    for action in plan.actions:
+    for action in transaction.actions:
         ownership_evidence.append(
             {
                 "action_id": action.action_id,
@@ -190,50 +197,89 @@ def _plan_sections(plan: GovernancePlan) -> dict[str, list[dict[str, Any]]]:
     }
 
 
-def _plan_report(
+def _transaction_report(
     command: str,
-    plan: GovernancePlan,
-    plan_path: Path,
+    transaction: GovernanceTransaction,
+    transaction_path: Path,
     legacy_content_scopes: tuple[str, ...] = (),
 ) -> dict[str, Any]:
-    action_counts = Counter(action.kind.value for action in plan.actions)
+    action_counts = Counter(action.kind.value for action in transaction.actions)
+    semantic_review_required = any(
+        action.source_path is not None
+        and (
+            action.target_path == "norn-governance/spec/main-spec.md"
+            or action.source_path
+            not in {
+                "docs/AGENTS.md",
+                "docs/spec/AGENTS.md",
+                "docs/appendix/README.md",
+            }
+        )
+        for action in transaction.actions
+    )
     return {
         "brand": BRAND,
         "command": command,
-        "target": plan.target_root,
-        "project_state": plan.project_state.value,
-        "template_version": plan.template_version,
+        "target": transaction.target_root,
+        "structure_state": transaction.project_state.value,
+        "template_version": transaction.template_version,
         "legacy_content_scopes": list(legacy_content_scopes),
-        "plan_path": str(plan_path),
-        "plan_sha256": plan.plan_sha256,
-        "executable": not plan.conflicts
-        and all(action.kind is not ActionKind.CONFLICT for action in plan.actions),
+        "transaction_path": str(transaction_path),
+        "transaction_sha256": transaction.transaction_sha256,
+        "semantic_review_required": semantic_review_required,
+        "verification_scope": {
+            "guarantees": [
+                "managed structure and template version",
+                "path fingerprints and rendered artifact hashes",
+                "single canonical main specification path",
+            ],
+            "excludes": [
+                "main specification semantic completeness",
+                "arbitrary document role correctness",
+                "specification and code agreement",
+                "product implementation correctness",
+            ],
+        },
+        "executable": not transaction.conflicts
+        and all(action.kind is not ActionKind.CONFLICT for action in transaction.actions),
         "summary": {
-            "total_actions": len(plan.actions),
+            "total_actions": len(transaction.actions),
             "action_counts": dict(sorted(action_counts.items())),
         },
-        "actions": [action.to_dict() for action in plan.actions],
-        "sections": _plan_sections(plan),
+        "actions": [action.to_dict() for action in transaction.actions],
+        "sections": _transaction_sections(transaction),
     }
 
 
 def _verification_dict(result: ApplyResult) -> dict[str, Any]:
     verification = result.verification
     return {
-        "state": verification.state.value,
+        "structure_state": verification.state.value,
         "manifest_valid": verification.manifest_valid,
         "single_spec_source": verification.single_spec_source,
         "checked_paths": list(verification.checked_paths),
         "warnings": list(verification.warnings),
+        "scope": {
+            "guarantees": [
+                "managed structure and template version",
+                "single canonical main specification path",
+            ],
+            "excludes": [
+                "main specification semantic completeness",
+                "arbitrary document role correctness",
+                "specification and code agreement",
+                "product implementation correctness",
+            ],
+        },
     }
 
 
-def _apply_report(target: Path, plan_path: Path, result: ApplyResult) -> dict[str, Any]:
+def _apply_report(target: Path, transaction_path: Path, result: ApplyResult) -> dict[str, Any]:
     return {
         "brand": BRAND,
         "command": "apply",
         "target": str(target),
-        "plan_path": str(plan_path),
+        "transaction_path": str(transaction_path),
         "created": list(result.created),
         "updated": list(result.updated),
         "removed": list(result.removed),
@@ -268,17 +314,21 @@ def _print_items(items: list[dict[str, Any]], formatter) -> None:
         print(f"  - {formatter(item)}")
 
 
-def print_human_plan_report(report: Mapping[str, Any]) -> None:
+def print_human_transaction_report(report: Mapping[str, Any]) -> None:
     sections = report["sections"]
     print(f"{BRAND} 分析报告")
     print(f"目标：{report['target']}")
-    print(f"计划：{report['plan_path']}")
+    print(f"临时治理事务：{report['transaction_path']}")
     if report["legacy_content_scopes"]:
         print("显式旧目录范围：" + "、".join(report["legacy_content_scopes"]))
     print("\n状态")
     print(
-        f"  - {report['project_state']}；"
+        f"  - {report['structure_state']}；"
         f"{'可执行' if report['executable'] else '需要先解决冲突'}"
+    )
+    print(
+        "  - 文档语义归位审计："
+        + ("需要由 Skill 完成" if report["semantic_review_required"] else "当前事务未触发")
     )
     print("\n归属证据")
     _print_items(
@@ -321,6 +371,9 @@ def print_human_plan_report(report: Mapping[str, Any]) -> None:
         sections["verification"],
         lambda item: f"{item['target_path']}：{'；'.join(item['checks'])}",
     )
+    print("\n机器验证边界")
+    print("  - 保证：" + "；".join(report["verification_scope"]["guarantees"]))
+    print("  - 不保证：" + "；".join(report["verification_scope"]["excludes"]))
 
 
 def print_human_apply_report(report: Mapping[str, Any]) -> None:
@@ -341,11 +394,12 @@ def print_human_apply_report(report: Mapping[str, Any]) -> None:
             print("  - 无")
     verification = report["verification"]
     print("\n验证")
-    print(f"  - 状态：{verification['state']}")
+    print(f"  - 结构状态：{verification['structure_state']}")
     print(f"  - manifest 有效：{verification['manifest_valid']}")
     print(f"  - 单一规格源：{verification['single_spec_source']}")
     for warning in verification["warnings"]:
         print(f"  - 警告：{warning}")
+    print("  - 不保证：" + "；".join(verification["scope"]["excludes"]))
 
 
 def _emit(report: Mapping[str, Any], report_json: bool) -> None:
@@ -354,7 +408,7 @@ def _emit(report: Mapping[str, Any], report_json: bool) -> None:
     elif report["command"] == "apply":
         print_human_apply_report(report)
     else:
-        print_human_plan_report(report)
+        print_human_transaction_report(report)
 
 
 def _run_analyze(args: argparse.Namespace, target: Path) -> dict[str, Any]:
@@ -366,35 +420,35 @@ def _run_analyze(args: argparse.Namespace, target: Path) -> dict[str, Any]:
     legacy_content_scopes = normalize_legacy_content_scopes(
         args.include_legacy_tree
     )
-    plan = analyze_governance(
+    transaction = analyze_governance(
         target,
         artifact_root,
         legacy_content_scopes=legacy_content_scopes,
     )
-    return _plan_report(
+    return _transaction_report(
         "analyze",
-        plan,
-        artifact_root / "plan.json",
+        transaction,
+        artifact_root / "transaction.json",
         legacy_content_scopes,
     )
 
 
 def _run_resolve(args: argparse.Namespace, target: Path) -> dict[str, Any]:
-    plan_path = Path(args.plan).expanduser().resolve()
-    plan = load_plan(plan_path)
-    _require_plan_target(plan, target)
+    transaction_path = Path(args.transaction).expanduser().resolve()
+    transaction = load_transaction(transaction_path)
+    _require_transaction_target(transaction, target)
     resolutions = _load_resolutions(Path(args.resolutions).expanduser().resolve())
-    resolved = resolve_conflicts(plan, resolutions, plan_path.parent)
-    resolved_path = write_plan(resolved, plan_path.parent)
-    return _plan_report("resolve", resolved, resolved_path)
+    resolved = resolve_conflicts(transaction, resolutions, transaction_path.parent)
+    resolved_path = write_transaction(resolved, transaction_path.parent)
+    return _transaction_report("resolve", resolved, resolved_path)
 
 
 def _run_apply(args: argparse.Namespace, target: Path) -> dict[str, Any]:
-    plan_path = Path(args.plan).expanduser().resolve()
-    plan = load_plan(plan_path)
-    _require_plan_target(plan, target)
-    result = apply_plan(plan_path)
-    return _apply_report(target, plan_path, result)
+    transaction_path = Path(args.transaction).expanduser().resolve()
+    transaction = load_transaction(transaction_path)
+    _require_transaction_target(transaction, target)
+    result = apply_transaction(transaction_path)
+    return _apply_report(target, transaction_path, result)
 
 
 def main() -> int:

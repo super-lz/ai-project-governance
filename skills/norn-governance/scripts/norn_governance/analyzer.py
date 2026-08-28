@@ -10,17 +10,17 @@ from .models import (
     ActionKind,
     ConflictChoice,
     ConflictResolution,
-    GovernancePlan,
+    GovernanceTransaction,
     ManagedFileRecord,
     NornManifest,
     OwnershipKind,
     PathFingerprint,
     PathKind,
-    PlannedAction,
+    TransactionAction,
     ProjectState,
     canonical_json_bytes,
     sha256_bytes,
-    write_plan,
+    write_transaction,
 )
 from .templates import (
     INITIALIZED_PATHS,
@@ -294,8 +294,8 @@ def _keep_action(
     relative_path: str,
     *,
     reason: str,
-) -> PlannedAction:
-    return PlannedAction(
+) -> TransactionAction:
+    return TransactionAction(
         action_id=_action_id("keep", relative_path),
         kind=ActionKind.KEEP,
         source_path=None,
@@ -304,7 +304,7 @@ def _keep_action(
         target_before=fingerprint_path(target_root / relative_path),
         output_sha256=None,
         ownership=_ownership_for(relative_path),
-        evidence=("canonical target already has the planned bytes",),
+        evidence=("canonical target already has the transaction output bytes",),
         reason=reason,
         risk="no file mutation",
         verification=("target fingerprint remains unchanged",),
@@ -320,8 +320,8 @@ def _conflict_action(
     reason: str,
     evidence: Iterable[str],
     allowed_resolutions: tuple[ConflictChoice, ...] = (),
-) -> PlannedAction:
-    return PlannedAction(
+) -> TransactionAction:
+    return TransactionAction(
         action_id=_action_id("conflict", target_path),
         kind=ActionKind.CONFLICT,
         source_path=source_path,
@@ -345,8 +345,8 @@ def _delete_action(
     relative_path: str,
     *,
     reason: str,
-) -> PlannedAction:
-    return PlannedAction(
+) -> TransactionAction:
+    return TransactionAction(
         action_id=_action_id("delete", relative_path),
         kind=ActionKind.DELETE,
         source_path=None,
@@ -355,7 +355,7 @@ def _delete_action(
         target_before=fingerprint_path(target_root / relative_path),
         output_sha256=None,
         ownership=_ownership_for(relative_path),
-        evidence=("canonical replacement is already verified by the plan",),
+        evidence=("canonical replacement is already verified by the transaction",),
         reason=reason,
         risk="removes only the fingerprinted legacy duplicate or empty directory",
         verification=("path is absent after apply",),
@@ -363,7 +363,7 @@ def _delete_action(
     )
 
 
-def _plan_output(
+def _transaction_output(
     target_root: Path,
     artifact_root: Path,
     *,
@@ -374,7 +374,7 @@ def _plan_output(
     source_path: str | None = None,
     allow_existing_replace: bool = False,
     byte_identical_move: bool = False,
-) -> list[PlannedAction]:
+) -> list[TransactionAction]:
     target = target_root / target_path
     source = target_root / source_path if source_path else None
     current_parent = target_root
@@ -413,7 +413,7 @@ def _plan_output(
             _keep_action(
                 target_root,
                 target_path,
-                reason="canonical target already matches planned output",
+                reason="canonical target already matches transaction output",
             )
         ]
         if source is not None and source_path != target_path:
@@ -438,7 +438,7 @@ def _plan_output(
                 target_root,
                 target_path,
                 source_path=source_path,
-                reason="canonical destination differs from planned migration output",
+                reason="canonical destination differs from transaction migration output",
                 evidence=(*evidence, "destination SHA-256 differs"),
                 allowed_resolutions=choices,
             )
@@ -455,7 +455,7 @@ def _plan_output(
     action_id = _action_id(kind.value, target_path)
     output_sha256 = _write_artifact(artifact_root, action_id, body)
     return [
-        PlannedAction(
+        TransactionAction(
             action_id=action_id,
             kind=kind,
             source_path=source_path,
@@ -471,7 +471,7 @@ def _plan_output(
                 if source_path
                 else "creates a new governed file"
             ),
-            verification=("target SHA-256 equals planned output",)
+            verification=("target SHA-256 equals transaction output",)
             + (("legacy source is absent",) if source_path else ()),
             allowed_resolutions=(),
         )
@@ -502,7 +502,7 @@ def _projected_directory_is_empty(
 
 def _append_directory_cleanup(
     target_root: Path,
-    actions: list[PlannedAction],
+    actions: list[TransactionAction],
     explicit_source_directories: Iterable[str] = (),
 ) -> None:
     explicit_source_directories = tuple(explicit_source_directories)
@@ -568,8 +568,8 @@ def _analyze_explicit_legacy_content(
     target_root: Path,
     artifact_root: Path,
     scopes: tuple[str, ...],
-) -> tuple[list[PlannedAction], set[str]]:
-    actions: list[PlannedAction] = []
+) -> tuple[list[TransactionAction], set[str]]:
+    actions: list[TransactionAction] = []
     source_directories: set[str] = set()
 
     def visit(
@@ -590,7 +590,7 @@ def _analyze_explicit_legacy_content(
                 visit(child, source_root, target_root_path)
             elif fingerprint.kind is PathKind.FILE:
                 actions.extend(
-                    _plan_output(
+                    _transaction_output(
                         target_root,
                         artifact_root,
                         source_path=child_relative,
@@ -645,12 +645,12 @@ def _analyze_explicit_legacy_content(
 def _analyze_uninitialized(
     target_root: Path,
     artifact_root: Path,
-) -> list[PlannedAction]:
-    actions: list[PlannedAction] = []
+) -> list[TransactionAction]:
+    actions: list[TransactionAction] = []
     source_root = asset_template_root()
     for relative_path in INITIALIZED_PATHS:
         actions.extend(
-            _plan_output(
+            _transaction_output(
                 target_root,
                 artifact_root,
                 target_path=relative_path,
@@ -662,8 +662,8 @@ def _analyze_uninitialized(
     return actions
 
 
-def _analyze_ambiguous(target_root: Path) -> list[PlannedAction]:
-    actions: list[PlannedAction] = []
+def _analyze_ambiguous(target_root: Path) -> list[TransactionAction]:
+    actions: list[TransactionAction] = []
     for source_path, target_path in LEGACY_PATH_MAP.items():
         if not (target_root / source_path).exists():
             continue
@@ -686,11 +686,11 @@ def _root_actions(
     target_root: Path,
     artifact_root: Path,
     structural_evidence: bool,
-) -> list[PlannedAction]:
+) -> list[TransactionAction]:
     current_root = asset_template_root() / ROOT_AGENTS
     target = target_root / ROOT_AGENTS
     if not target.exists():
-        return _plan_output(
+        return _transaction_output(
             target_root,
             artifact_root,
             target_path=ROOT_AGENTS,
@@ -701,7 +701,7 @@ def _root_actions(
     if _same_bytes(target, current_root):
         return [_keep_action(target_root, ROOT_AGENTS, reason="root entrypoint is current")]
     if _is_exact_legacy(target_root, ROOT_AGENTS):
-        return _plan_output(
+        return _transaction_output(
             target_root,
             artifact_root,
             target_path=ROOT_AGENTS,
@@ -738,8 +738,8 @@ def _analyze_legacy_or_mixed(
     target_root: Path,
     artifact_root: Path,
     legacy_content_scopes: tuple[str, ...] = (),
-) -> list[PlannedAction]:
-    actions: list[PlannedAction] = []
+) -> list[TransactionAction]:
+    actions: list[TransactionAction] = []
     structural_evidence = _has_structural_legacy_evidence(target_root)
     actions.extend(_root_actions(target_root, artifact_root, structural_evidence))
 
@@ -780,7 +780,7 @@ def _analyze_legacy_or_mixed(
                     )
                 continue
             actions.extend(
-                _plan_output(
+                _transaction_output(
                     target_root,
                     artifact_root,
                     target_path=target_path,
@@ -794,7 +794,7 @@ def _analyze_legacy_or_mixed(
         exact_legacy = _is_exact_legacy(target_root, source_path)
         if target_path.endswith("main-spec.md") and (exact_legacy or structural_evidence):
             actions.extend(
-                _plan_output(
+                _transaction_output(
                     target_root,
                     artifact_root,
                     source_path=source_path,
@@ -808,7 +808,7 @@ def _analyze_legacy_or_mixed(
             )
         elif exact_legacy:
             actions.extend(
-                _plan_output(
+                _transaction_output(
                     target_root,
                     artifact_root,
                     source_path=source_path,
@@ -852,12 +852,12 @@ def _analyze_legacy_or_mixed(
     actions.extend(explicit_actions)
     if not any(action.kind is ActionKind.CONFLICT for action in actions):
         actions.extend(
-            _plan_output(
+            _transaction_output(
                 target_root,
                 artifact_root,
                 target_path=MANIFEST_PATH,
                 body=(current_root / MANIFEST_PATH).read_bytes(),
-                reason="write the current manifest after the migration plan is fully resolved",
+                reason="write the current manifest after the governance transaction is fully resolved",
                 evidence=("all governed content actions are deterministic",),
             )
         )
@@ -865,7 +865,7 @@ def _analyze_legacy_or_mixed(
     return actions
 
 
-def _current_keep_actions(target_root: Path) -> list[PlannedAction]:
+def _current_keep_actions(target_root: Path) -> list[TransactionAction]:
     return [
         _keep_action(target_root, path, reason="governed path is current")
         for path in INITIALIZED_PATHS
@@ -875,9 +875,9 @@ def _current_keep_actions(target_root: Path) -> list[PlannedAction]:
 def _analyze_upgrade(
     target_root: Path,
     artifact_root: Path,
-) -> list[PlannedAction]:
+) -> list[TransactionAction]:
     manifest = load_manifest(target_root / MANIFEST_PATH)
-    actions: list[PlannedAction] = []
+    actions: list[TransactionAction] = []
     current_templates = asset_template_root()
     for relative_path, (ownership, block_ids) in MANAGED_PATHS.items():
         if ownership is OwnershipKind.PROJECT:
@@ -914,7 +914,7 @@ def _analyze_upgrade(
         template_block = parse_managed_blocks(template_text)[block_id].text
         rendered = replace_managed_block(current_text, block_id, template_block)
         actions.extend(
-            _plan_output(
+            _transaction_output(
                 target_root,
                 artifact_root,
                 target_path=relative_path,
@@ -926,7 +926,7 @@ def _analyze_upgrade(
         )
     if not any(action.kind is ActionKind.CONFLICT for action in actions):
         actions.extend(
-            _plan_output(
+            _transaction_output(
                 target_root,
                 artifact_root,
                 target_path=MANIFEST_PATH,
@@ -939,12 +939,12 @@ def _analyze_upgrade(
     return actions
 
 
-def _resolved_plan_state(plan: GovernancePlan) -> ProjectState:
-    if plan.project_state is ProjectState.UPGRADEABLE:
+def _resolved_transaction_state(transaction: GovernanceTransaction) -> ProjectState:
+    if transaction.project_state is ProjectState.UPGRADEABLE:
         return ProjectState.UPGRADEABLE
     if any(
         action.source_path and action.source_path.startswith("docs/")
-        for action in plan.actions
+        for action in transaction.actions
     ):
         return ProjectState.LEGACY
     return ProjectState.MIXED
@@ -953,14 +953,16 @@ def _resolved_plan_state(plan: GovernancePlan) -> ProjectState:
 def _final_governed_body(
     target_root: Path,
     artifact_root: Path,
-    actions: list[PlannedAction],
+    actions: list[TransactionAction],
     relative_path: str,
 ) -> bytes:
     candidates = [
         action for action in actions if action.target_path == relative_path
     ]
     if len(candidates) != 1:
-        raise ValueError(f"resolved plan must contain one action for {relative_path}")
+        raise ValueError(
+            f"resolved transaction must contain one action for {relative_path}"
+        )
     action = candidates[0]
     if action.output_sha256 is not None:
         artifact = artifact_root / "rendered" / f"{action.action_id}.content"
@@ -977,7 +979,7 @@ def _final_governed_body(
 def _resolved_manifest(
     target_root: Path,
     artifact_root: Path,
-    actions: list[PlannedAction],
+    actions: list[TransactionAction],
 ) -> NornManifest:
     records: dict[str, ManagedFileRecord] = {}
     for relative_path, (ownership, block_ids) in MANAGED_PATHS.items():
@@ -1012,17 +1014,17 @@ def _resolved_manifest(
 
 
 def resolve_conflicts(
-    plan: GovernancePlan,
+    transaction: GovernanceTransaction,
     choices: tuple[ConflictResolution, ...],
     artifact_root: Path,
-) -> GovernancePlan:
-    if plan.plan_sha256 != plan.expected_digest():
-        raise ValueError("plan digest mismatch")
+) -> GovernanceTransaction:
+    if transaction.transaction_sha256 != transaction.expected_digest():
+        raise ValueError("transaction digest mismatch")
     artifact_root = Path(artifact_root).resolve()
-    target_root = Path(plan.target_root)
+    target_root = Path(transaction.target_root)
     conflicts = {
         action.action_id: action
-        for action in plan.actions
+        for action in transaction.actions
         if action.kind is ActionKind.CONFLICT
     }
     choice_map: dict[str, ConflictResolution] = {}
@@ -1035,8 +1037,8 @@ def resolve_conflicts(
         extra = sorted(set(choice_map) - set(conflicts))
         raise ValueError(f"conflict choices mismatch: missing={missing}, extra={extra}")
 
-    resolved_actions: list[PlannedAction] = []
-    for action in plan.actions:
+    resolved_actions: list[TransactionAction] = []
+    for action in transaction.actions:
         if action.kind is not ActionKind.CONFLICT:
             if action.target_path != MANIFEST_PATH:
                 resolved_actions.append(action)
@@ -1048,7 +1050,7 @@ def resolve_conflicts(
             )
         if resolution.choice is ConflictChoice.KEEP_CURRENT:
             resolved_actions.append(
-                PlannedAction(
+                TransactionAction(
                     action_id=action.action_id,
                     kind=ActionKind.KEEP,
                     source_path=None,
@@ -1098,7 +1100,7 @@ def resolve_conflicts(
             else ActionKind.CREATE
         )
         resolved_actions.append(
-            PlannedAction(
+            TransactionAction(
                 action_id=action.action_id,
                 kind=kind,
                 source_path=action.source_path,
@@ -1136,7 +1138,7 @@ def resolve_conflicts(
     )
     manifest_before = fingerprint_path(target_root / MANIFEST_PATH)
     resolved_actions.append(
-        PlannedAction(
+        TransactionAction(
             action_id=manifest_action_id,
             kind=(
                 ActionKind.MERGE if manifest_before.exists else ActionKind.CREATE
@@ -1154,14 +1156,14 @@ def resolve_conflicts(
             allowed_resolutions=(),
         )
     )
-    resolved = GovernancePlan.build(
-        target_root=plan.target_root,
-        project_state=_resolved_plan_state(plan),
+    resolved = GovernanceTransaction.build(
+        target_root=transaction.target_root,
+        project_state=_resolved_transaction_state(transaction),
         template_version=TEMPLATE_VERSION,
         actions=resolved_actions,
         conflicts=(),
     )
-    write_plan(resolved, artifact_root)
+    write_transaction(resolved, artifact_root)
     return resolved
 
 
@@ -1169,7 +1171,7 @@ def _blocking_state_actions(
     target_root: Path,
     artifact_root: Path,
     state: ProjectState,
-) -> list[PlannedAction]:
+) -> list[TransactionAction]:
     if state is ProjectState.AMBIGUOUS:
         return _analyze_ambiguous(target_root)
     for relative_path in (ROOT_AGENTS, MANIFEST_PATH, *LEGACY_PATH_MAP):
@@ -1218,7 +1220,7 @@ def analyze_governance(
     artifact_root: Path,
     *,
     legacy_content_scopes: Iterable[str] = (),
-) -> GovernancePlan:
+) -> GovernanceTransaction:
     target_root = Path(target_root).resolve()
     artifact_root = Path(artifact_root).resolve()
     normalized_scopes = normalize_legacy_content_scopes(legacy_content_scopes)
@@ -1255,7 +1257,7 @@ def analyze_governance(
     else:
         actions = _blocking_state_actions(target_root, artifact_root, state)
 
-    explicit_actions: list[PlannedAction] = []
+    explicit_actions: list[TransactionAction] = []
     if normalized_scopes and not handled_explicit_content:
         explicit_actions, source_directories = _analyze_explicit_legacy_content(
             target_root,
@@ -1294,12 +1296,12 @@ def analyze_governance(
         for action in actions
         if action.kind is ActionKind.CONFLICT
     )
-    plan = GovernancePlan.build(
+    transaction = GovernanceTransaction.build(
         target_root=str(target_root),
         project_state=effective_state,
         template_version=TEMPLATE_VERSION,
         actions=actions,
         conflicts=conflicts,
     )
-    write_plan(plan, artifact_root)
-    return plan
+    write_transaction(transaction, artifact_root)
+    return transaction

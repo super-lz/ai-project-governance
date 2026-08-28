@@ -18,16 +18,16 @@ from norn_governance.models import (  # noqa: E402
     ActionKind,
     ConflictChoice,
     ConflictResolution,
-    GovernancePlan,
+    GovernanceTransaction,
     ManagedFileRecord,
     NornManifest,
     OwnershipKind,
     PathFingerprint,
     PathKind,
-    PlannedAction,
+    TransactionAction,
     ProjectState,
-    load_plan,
-    write_plan,
+    load_transaction,
+    write_transaction,
 )
 from norn_governance.analyzer import (  # noqa: E402
     analyze_governance,
@@ -35,16 +35,20 @@ from norn_governance.analyzer import (  # noqa: E402
     fingerprint_path,
     resolve_conflicts,
 )
-from norn_governance.templates import MANAGED_PATHS, asset_template_root  # noqa: E402
+from norn_governance.templates import (  # noqa: E402
+    MANAGED_PATHS,
+    TEMPLATE_VERSION,
+    asset_template_root,
+)
 from norn_governance.managed_markdown import (  # noqa: E402
     parse_managed_blocks,
     replace_managed_block,
 )
 
 
-class PlanModelTests(unittest.TestCase):
-    def make_action(self) -> PlannedAction:
-        return PlannedAction(
+class TransactionModelTests(unittest.TestCase):
+    def make_action(self) -> TransactionAction:
+        return TransactionAction(
             action_id="create-root-agents",
             kind=ActionKind.CREATE,
             source_path=None,
@@ -56,12 +60,12 @@ class PlanModelTests(unittest.TestCase):
             evidence=("target path is missing",),
             reason="initialize Norn entrypoint",
             risk="creates a new file",
-            verification=("target SHA-256 equals planned output",),
+            verification=("target SHA-256 equals transaction output",),
             allowed_resolutions=(),
         )
 
-    def make_plan(self) -> GovernancePlan:
-        return GovernancePlan.build(
+    def make_transaction(self) -> GovernanceTransaction:
+        return GovernanceTransaction.build(
             target_root="/tmp/example",
             project_state=ProjectState.UNINITIALIZED,
             template_version=1,
@@ -69,35 +73,35 @@ class PlanModelTests(unittest.TestCase):
             conflicts=(),
         )
 
-    def test_plan_digest_is_stable_and_excludes_its_own_digest(self) -> None:
-        first = self.make_plan()
-        second = self.make_plan()
+    def test_transaction_digest_is_stable_and_excludes_its_own_digest(self) -> None:
+        first = self.make_transaction()
+        second = self.make_transaction()
 
-        self.assertEqual(len(first.plan_sha256), 64)
-        self.assertEqual(first.plan_sha256, second.plan_sha256)
-        self.assertEqual(first.to_dict()["plan_sha256"], first.plan_sha256)
+        self.assertEqual(len(first.transaction_sha256), 64)
+        self.assertEqual(first.transaction_sha256, second.transaction_sha256)
+        self.assertEqual(first.to_dict()["transaction_sha256"], first.transaction_sha256)
         self.assertEqual(
-            GovernancePlan.from_dict(first.to_dict()).to_dict(), first.to_dict()
+            GovernanceTransaction.from_dict(first.to_dict()).to_dict(), first.to_dict()
         )
 
-    def test_tampered_plan_digest_is_rejected(self) -> None:
-        payload = self.make_plan().to_dict()
+    def test_tampered_transaction_digest_is_rejected(self) -> None:
+        payload = self.make_transaction().to_dict()
         payload["template_version"] = 2
 
-        with self.assertRaisesRegex(ValueError, "plan digest mismatch"):
-            GovernancePlan.from_dict(payload)
+        with self.assertRaisesRegex(ValueError, "transaction digest mismatch"):
+            GovernanceTransaction.from_dict(payload)
 
-    def test_plan_json_uses_enum_values_and_immutable_collections(self) -> None:
-        plan = self.make_plan()
-        payload = plan.to_dict()
+    def test_transaction_json_uses_enum_values_and_immutable_collections(self) -> None:
+        transaction = self.make_transaction()
+        payload = transaction.to_dict()
 
         self.assertEqual(payload["project_state"], "uninitialized")
         self.assertEqual(payload["actions"][0]["kind"], "create")
         self.assertEqual(payload["actions"][0]["ownership"], "managed")
-        self.assertIsInstance(plan.actions, tuple)
-        self.assertIsInstance(plan.actions[0].evidence, tuple)
+        self.assertIsInstance(transaction.actions, tuple)
+        self.assertIsInstance(transaction.actions[0].evidence, tuple)
         with self.assertRaises(FrozenInstanceError):
-            plan.template_version = 2  # type: ignore[misc]
+            transaction.template_version = 2  # type: ignore[misc]
 
     def test_path_fingerprints_distinguish_missing_file_and_directory(self) -> None:
         missing = PathFingerprint.missing()
@@ -108,25 +112,25 @@ class PlanModelTests(unittest.TestCase):
         self.assertEqual(file_path.to_dict()["kind"], "file")
         self.assertEqual(directory.to_dict()["kind"], "directory")
 
-    def test_write_and_load_plan_round_trip_and_reject_tampering(self) -> None:
+    def test_write_and_load_transaction_round_trip_and_reject_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            plan_path = write_plan(self.make_plan(), Path(directory))
-            self.assertEqual(plan_path.name, "plan.json")
-            self.assertEqual(load_plan(plan_path).to_dict(), self.make_plan().to_dict())
+            transaction_path = write_transaction(self.make_transaction(), Path(directory))
+            self.assertEqual(transaction_path.name, "transaction.json")
+            self.assertEqual(load_transaction(transaction_path).to_dict(), self.make_transaction().to_dict())
 
-            payload = json.loads(plan_path.read_text(encoding="utf-8"))
+            payload = json.loads(transaction_path.read_text(encoding="utf-8"))
             payload["project_state"] = "current"
-            plan_path.write_text(json.dumps(payload), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "plan digest mismatch"):
-                load_plan(plan_path)
+            transaction_path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "transaction digest mismatch"):
+                load_transaction(transaction_path)
 
-    def test_write_rejects_plan_with_invalid_digest(self) -> None:
-        invalid = replace(self.make_plan(), plan_sha256="f" * 64)
+    def test_write_rejects_transaction_with_invalid_digest(self) -> None:
+        invalid = replace(self.make_transaction(), transaction_sha256="f" * 64)
 
         with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaisesRegex(ValueError, "plan digest mismatch"):
-                write_plan(invalid, Path(directory))
-            self.assertFalse((Path(directory) / "plan.json").exists())
+            with self.assertRaisesRegex(ValueError, "transaction digest mismatch"):
+                write_transaction(invalid, Path(directory))
+            self.assertFalse((Path(directory) / "transaction.json").exists())
 
 
 class ManifestModelTests(unittest.TestCase):
@@ -224,8 +228,8 @@ class ManifestModelTests(unittest.TestCase):
         self.assertEqual(action.kind, ActionKind.CONFLICT)
         self.assertEqual(action.allowed_resolutions, ())
 
-    def make_conflict_action(self) -> PlannedAction:
-        return PlannedAction(
+    def make_conflict_action(self) -> TransactionAction:
+        return TransactionAction(
             action_id="merge-root-agents",
             kind=ActionKind.CONFLICT,
             source_path=None,
@@ -237,7 +241,7 @@ class ManifestModelTests(unittest.TestCase):
             evidence=("managed block differs",),
             reason="requires semantic choice",
             risk="project rules could be lost",
-            verification=("choice is represented in a resolved plan",),
+            verification=("choice is represented in a resolved transaction",),
             allowed_resolutions=(
                 ConflictChoice.ADOPT_TEMPLATE,
                 ConflictChoice.SEMANTIC_MERGE,
@@ -328,20 +332,20 @@ class GovernanceAnalyzerTests(unittest.TestCase):
 
     def action_for(
         self,
-        plan: GovernancePlan,
+        transaction: GovernanceTransaction,
         target_path: str,
         kind: ActionKind | None = None,
-    ) -> PlannedAction:
+    ) -> TransactionAction:
         matches = [
             action
-            for action in plan.actions
+            for action in transaction.actions
             if action.target_path == target_path
             and (kind is None or action.kind is kind)
         ]
-        self.assertEqual(len(matches), 1, (target_path, kind, plan.to_dict()))
+        self.assertEqual(len(matches), 1, (target_path, kind, transaction.to_dict()))
         return matches[0]
 
-    def rendered_text(self, artifacts: Path, action: PlannedAction) -> str:
+    def rendered_text(self, artifacts: Path, action: TransactionAction) -> str:
         path = artifacts / "rendered" / f"{action.action_id}.content"
         body = path.read_bytes()
         self.assertEqual(hashlib.sha256(body).hexdigest(), action.output_sha256)
@@ -369,19 +373,19 @@ class GovernanceAnalyzerTests(unittest.TestCase):
         artifacts = self.artifacts()
         before = self.snapshot(target)
 
-        plan = analyze_governance(target, artifacts)
+        transaction = analyze_governance(target, artifacts)
 
-        self.assertEqual(plan.project_state, ProjectState.UNINITIALIZED)
+        self.assertEqual(transaction.project_state, ProjectState.UNINITIALIZED)
         self.assertEqual(self.snapshot(target), before)
         self.assertEqual(
             {
                 action.target_path
-                for action in plan.actions
+                for action in transaction.actions
                 if action.kind is ActionKind.CREATE
             },
             {*MANAGED_PATHS, "norn-governance/.norn.json"},
         )
-        self.assertEqual(load_plan(artifacts / "plan.json").to_dict(), plan.to_dict())
+        self.assertEqual(load_transaction(artifacts / "transaction.json").to_dict(), transaction.to_dict())
 
     def test_custom_root_can_resolve_initialization_without_missing_actions(self) -> None:
         target = self.make_target()
@@ -427,21 +431,21 @@ class GovernanceAnalyzerTests(unittest.TestCase):
         target = self.copy_current_template()
 
         self.assertEqual(classify_project(target), ProjectState.CURRENT)
-        plan = analyze_governance(target, self.artifacts())
+        transaction = analyze_governance(target, self.artifacts())
 
-        self.assertEqual(plan.project_state, ProjectState.CURRENT)
-        self.assertTrue(plan.actions)
-        self.assertTrue(all(action.kind is ActionKind.KEEP for action in plan.actions))
+        self.assertEqual(transaction.project_state, ProjectState.CURRENT)
+        self.assertTrue(transaction.actions)
+        self.assertTrue(all(action.kind is ActionKind.KEEP for action in transaction.actions))
 
     def test_isolated_legacy_named_spec_is_ambiguous(self) -> None:
         target = self.make_target()
         self.write(target, "docs/spec/main-spec.md", "# Existing product spec\n")
 
-        plan = analyze_governance(target, self.artifacts())
+        transaction = analyze_governance(target, self.artifacts())
 
-        self.assertEqual(plan.project_state, ProjectState.AMBIGUOUS)
-        self.assertEqual(plan.actions[0].kind, ActionKind.CONFLICT)
-        self.assertIn("insufficient legacy ownership evidence", plan.actions[0].reason)
+        self.assertEqual(transaction.project_state, ProjectState.AMBIGUOUS)
+        self.assertEqual(transaction.actions[0].kind, ActionKind.CONFLICT)
+        self.assertIn("insufficient legacy ownership evidence", transaction.actions[0].reason)
 
     def test_partial_exact_legacy_files_are_mixed_not_ambiguous(self) -> None:
         target = self.make_target()
@@ -450,23 +454,23 @@ class GovernanceAnalyzerTests(unittest.TestCase):
         destination.parent.mkdir(parents=True)
         shutil.copy2(source, destination)
 
-        plan = analyze_governance(target, self.artifacts())
+        transaction = analyze_governance(target, self.artifacts())
 
-        self.assertEqual(plan.project_state, ProjectState.MIXED)
+        self.assertEqual(transaction.project_state, ProjectState.MIXED)
 
     def test_complete_legacy_bundle_builds_hashed_merge_artifacts(self) -> None:
         target = self.copy_legacy_template()
         artifacts = self.artifacts()
         before = self.snapshot(target)
 
-        plan = analyze_governance(target, artifacts)
+        transaction = analyze_governance(target, artifacts)
 
-        self.assertEqual(plan.project_state, ProjectState.LEGACY)
+        self.assertEqual(transaction.project_state, ProjectState.LEGACY)
         self.assertEqual(self.snapshot(target), before)
         self.assertEqual(
             {
                 (action.source_path, action.target_path, action.kind)
-                for action in plan.actions
+                for action in transaction.actions
                 if action.source_path
             },
             {
@@ -492,7 +496,7 @@ class GovernanceAnalyzerTests(unittest.TestCase):
                 ),
             },
         )
-        for action in plan.actions:
+        for action in transaction.actions:
             if action.output_sha256:
                 self.rendered_text(artifacts, action)
 
@@ -506,11 +510,11 @@ class GovernanceAnalyzerTests(unittest.TestCase):
         self.write(target, "docs/architecture.md", "project-owned\n")
         artifacts = self.artifacts()
 
-        plan = analyze_governance(target, artifacts)
+        transaction = analyze_governance(target, artifacts)
 
-        self.assertEqual(plan.project_state, ProjectState.LEGACY)
+        self.assertEqual(transaction.project_state, ProjectState.LEGACY)
         spec_action = self.action_for(
-            plan, "norn-governance/spec/main-spec.md", ActionKind.MERGE
+            transaction, "norn-governance/spec/main-spec.md", ActionKind.MERGE
         )
         rendered = self.rendered_text(artifacts, spec_action)
         self.assertIn("Order state remains durable.", rendered)
@@ -519,7 +523,7 @@ class GovernanceAnalyzerTests(unittest.TestCase):
             "docs/architecture.md",
             {
                 path
-                for action in plan.actions
+                for action in transaction.actions
                 for path in (action.source_path, action.target_path)
                 if path
             },
@@ -527,7 +531,7 @@ class GovernanceAnalyzerTests(unittest.TestCase):
         self.assertFalse(
             any(
                 action.kind is ActionKind.DELETE and action.target_path == "docs"
-                for action in plan.actions
+                for action in transaction.actions
             )
         )
 
@@ -535,10 +539,10 @@ class GovernanceAnalyzerTests(unittest.TestCase):
         target = self.copy_legacy_template()
         self.append(target, "docs/AGENTS.md", "\n## Project Rule\nKeep this.\n")
 
-        plan = analyze_governance(target, self.artifacts())
+        transaction = analyze_governance(target, self.artifacts())
 
-        self.assertEqual(plan.project_state, ProjectState.CONFLICT)
-        action = self.action_for(plan, "norn-governance/AGENTS.md")
+        self.assertEqual(transaction.project_state, ProjectState.CONFLICT)
+        action = self.action_for(transaction, "norn-governance/AGENTS.md")
         self.assertEqual(action.kind, ActionKind.CONFLICT)
         self.assertEqual(
             action.allowed_resolutions,
@@ -547,7 +551,7 @@ class GovernanceAnalyzerTests(unittest.TestCase):
         self.assertFalse(
             any(
                 action.target_path == "norn-governance/.norn.json"
-                for action in plan.actions
+                for action in transaction.actions
             )
         )
 
@@ -557,16 +561,16 @@ class GovernanceAnalyzerTests(unittest.TestCase):
         destination.parent.mkdir(parents=True)
         shutil.copy2(self.asset_root / "norn-governance/AGENTS.md", destination)
 
-        plan = analyze_governance(target, self.artifacts())
+        transaction = analyze_governance(target, self.artifacts())
 
-        self.action_for(plan, "norn-governance/AGENTS.md", ActionKind.KEEP)
-        duplicate_delete = self.action_for(plan, "docs/AGENTS.md", ActionKind.DELETE)
+        self.action_for(transaction, "norn-governance/AGENTS.md", ActionKind.KEEP)
+        duplicate_delete = self.action_for(transaction, "docs/AGENTS.md", ActionKind.DELETE)
         self.assertEqual(duplicate_delete.output_sha256, None)
 
     def test_explicit_tree_reports_target_parent_collision_during_analysis(
         self,
     ) -> None:
-        """防止嵌套目标父路径为文件时生成表面可执行、实际必失败的计划。"""
+        """防止嵌套目标父路径为文件时生成表面可执行、实际必失败的事务。"""
         target = self.copy_current_template()
         self.write(target, "docs/appendix/diagrams/flow.md", "# Flow\n")
         self.write(
@@ -575,14 +579,14 @@ class GovernanceAnalyzerTests(unittest.TestCase):
             "this path blocks the destination directory\n",
         )
 
-        plan = analyze_governance(
+        transaction = analyze_governance(
             target,
             self.artifacts(),
             legacy_content_scopes=("appendix",),
         )
 
         action = self.action_for(
-            plan,
+            transaction,
             "norn-governance/appendix/diagrams/flow.md",
         )
         self.assertEqual(action.kind, ActionKind.CONFLICT)
@@ -598,13 +602,13 @@ class GovernanceAnalyzerTests(unittest.TestCase):
             "current guide\n",
         )
 
-        plan = analyze_governance(
+        transaction = analyze_governance(
             target,
             self.artifacts(),
             legacy_content_scopes=("appendix",),
         )
 
-        action = self.action_for(plan, "norn-governance/appendix/guide.md")
+        action = self.action_for(transaction, "norn-governance/appendix/guide.md")
         self.assertEqual(action.kind, ActionKind.CONFLICT)
         self.assertEqual(
             action.allowed_resolutions,
@@ -625,31 +629,31 @@ class GovernanceAnalyzerTests(unittest.TestCase):
         source.parent.mkdir(parents=True)
         source.symlink_to(outside)
 
-        plan = analyze_governance(
+        transaction = analyze_governance(
             target,
             self.artifacts(),
             legacy_content_scopes=("appendix",),
         )
 
-        action = self.action_for(plan, "norn-governance/appendix/external.md")
+        action = self.action_for(transaction, "norn-governance/appendix/external.md")
         self.assertEqual(action.kind, ActionKind.CONFLICT)
         self.assertIn("unsupported filesystem type", action.reason)
         self.assertFalse(action.allowed_resolutions)
 
     def test_explicit_empty_legacy_tree_is_reported_as_mixed_cleanup(self) -> None:
-        """防止只剩空旧目录时把删除计划误报为 current 无变更。"""
+        """防止只剩空旧目录时把删除事务误报为 current 无变更。"""
         target = self.copy_current_template()
         (target / "docs/appendix").mkdir(parents=True)
 
-        plan = analyze_governance(
+        transaction = analyze_governance(
             target,
             self.artifacts(),
             legacy_content_scopes=("appendix",),
         )
 
-        self.assertEqual(plan.project_state, ProjectState.MIXED)
-        self.action_for(plan, "docs/appendix", ActionKind.DELETE)
-        self.action_for(plan, "docs", ActionKind.DELETE)
+        self.assertEqual(transaction.project_state, ProjectState.MIXED)
+        self.action_for(transaction, "docs/appendix", ActionKind.DELETE)
+        self.action_for(transaction, "docs", ActionKind.DELETE)
 
     def test_current_and_legacy_paths_are_mixed(self) -> None:
         target = self.copy_current_template()
@@ -664,12 +668,12 @@ class GovernanceAnalyzerTests(unittest.TestCase):
         target = self.copy_legacy_template()
         shutil.copy2(self.asset_root / "AGENTS.md", target / "AGENTS.md")
 
-        plan = analyze_governance(target, self.artifacts())
+        transaction = analyze_governance(target, self.artifacts())
 
-        self.assertEqual(plan.project_state, ProjectState.MIXED)
-        self.assertFalse(plan.conflicts)
+        self.assertEqual(transaction.project_state, ProjectState.MIXED)
+        self.assertFalse(transaction.conflicts)
         self.assertEqual(
-            self.action_for(plan, "AGENTS.md").kind,
+            self.action_for(transaction, "AGENTS.md").kind,
             ActionKind.KEEP,
         )
 
@@ -713,20 +717,20 @@ class GovernanceAnalyzerTests(unittest.TestCase):
         self.append(target, "AGENTS.md", "\n## Project Rule\nKeep this.\n")
         artifacts = self.artifacts()
 
-        plan = analyze_governance(target, artifacts)
+        transaction = analyze_governance(target, artifacts)
 
-        self.assertEqual(plan.project_state, ProjectState.UPGRADEABLE)
-        root_action = self.action_for(plan, "AGENTS.md", ActionKind.MERGE)
+        self.assertEqual(transaction.project_state, ProjectState.UPGRADEABLE)
+        root_action = self.action_for(transaction, "AGENTS.md", ActionKind.MERGE)
         rendered = self.rendered_text(artifacts, root_action)
         self.assertIn("## Project Rule\nKeep this.", rendered)
-        self.assertIn("## 整体性与变更边界", rendered)
+        self.assertIn("## Development lifecycle", rendered)
         manifest_action = self.action_for(
-            plan, "norn-governance/.norn.json", ActionKind.MERGE
+            transaction, "norn-governance/.norn.json", ActionKind.MERGE
         )
         upgraded_manifest = NornManifest.from_dict(
             json.loads(self.rendered_text(artifacts, manifest_action))
         )
-        self.assertEqual(upgraded_manifest.template_version, 1)
+        self.assertEqual(upgraded_manifest.template_version, TEMPLATE_VERSION)
 
     def test_modified_managed_block_requires_explicit_choice(self) -> None:
         target = self.copy_versioned_project()
@@ -745,9 +749,9 @@ class GovernanceAnalyzerTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        plan = analyze_governance(target, self.artifacts())
+        transaction = analyze_governance(target, self.artifacts())
 
-        root_action = self.action_for(plan, "AGENTS.md", ActionKind.CONFLICT)
+        root_action = self.action_for(transaction, "AGENTS.md", ActionKind.CONFLICT)
         self.assertIn("managed block differs from recorded base", root_action.reason)
         self.assertEqual(
             root_action.allowed_resolutions,
@@ -788,7 +792,7 @@ class GovernanceAnalyzerTests(unittest.TestCase):
             artifacts,
         )
 
-        self.assertNotEqual(resolved.plan_sha256, original.plan_sha256)
+        self.assertNotEqual(resolved.transaction_sha256, original.transaction_sha256)
         self.assertFalse(resolved.conflicts)
         self.action_for(resolved, "AGENTS.md", ActionKind.KEEP)
         manifest_action = self.action_for(

@@ -8,20 +8,20 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .analyzer import classify_project, fingerprint_path
-from .models import ActionKind, GovernancePlan, PlannedAction, ProjectState, load_plan
+from .models import ActionKind, GovernanceTransaction, TransactionAction, ProjectState, load_transaction
 from .templates import INITIALIZED_PATHS, MANIFEST_PATH, TEMPLATE_VERSION, load_manifest
 
 
-class PlanPreconditionError(RuntimeError):
+class TransactionPreconditionError(RuntimeError):
     """Raised before writes when the analyzed repository state changed."""
 
 
-class PlanArtifactError(RuntimeError):
-    """Raised when a plan or rendered output cannot be trusted."""
+class TransactionArtifactError(RuntimeError):
+    """Raised when a governance transaction or rendered output cannot be trusted."""
 
 
-class PlanConflictError(RuntimeError):
-    """Raised when a plan still contains unresolved conflicts."""
+class TransactionConflictError(RuntimeError):
+    """Raised when a governance transaction still contains unresolved conflicts."""
 
 
 @dataclass(frozen=True)
@@ -45,51 +45,53 @@ class ApplyResult:
 def _safe_repository_path(target_root: Path, relative_path: str) -> Path:
     path = Path(relative_path)
     if path.is_absolute() or not path.parts or ".." in path.parts:
-        raise PlanPreconditionError(f"unsafe relative path: {relative_path}")
+        raise TransactionPreconditionError(f"unsafe relative path: {relative_path}")
     candidate = target_root.joinpath(*path.parts)
     current = target_root
     for part in path.parts[:-1]:
         current = current / part
         if current.is_symlink():
-            raise PlanPreconditionError(
+            raise TransactionPreconditionError(
                 f"symlink in governed path parent: {current.relative_to(target_root)}"
             )
         if current.exists() and not current.is_dir():
-            raise PlanPreconditionError(
+            raise TransactionPreconditionError(
                 f"non-directory governed path parent: {current.relative_to(target_root)}"
             )
     resolved = candidate.resolve(strict=False)
     if not resolved.is_relative_to(target_root):
-        raise PlanPreconditionError(f"path escapes target root: {relative_path}")
+        raise TransactionPreconditionError(f"path escapes target root: {relative_path}")
     if candidate.is_symlink():
-        raise PlanPreconditionError(f"governed path is a symlink: {relative_path}")
+        raise TransactionPreconditionError(f"governed path is a symlink: {relative_path}")
     return candidate
 
 
-def _load_valid_plan(plan_path: Path) -> GovernancePlan:
+def _load_valid_transaction(transaction_path: Path) -> GovernanceTransaction:
     try:
-        plan = load_plan(plan_path)
+        transaction = load_transaction(transaction_path)
     except ValueError as exc:
-        raise PlanArtifactError(str(exc)) from exc
-    if plan.conflicts or any(
-        action.kind is ActionKind.CONFLICT for action in plan.actions
+        raise TransactionArtifactError(str(exc)) from exc
+    if transaction.conflicts or any(
+        action.kind is ActionKind.CONFLICT for action in transaction.actions
     ):
-        raise PlanConflictError("plan contains unresolved conflict actions")
-    return plan
+        raise TransactionConflictError("transaction contains unresolved conflict actions")
+    return transaction
 
 
-def _validate_plan_paths(plan: GovernancePlan) -> Path:
-    target_root = Path(plan.target_root)
+def _validate_transaction_paths(transaction: GovernanceTransaction) -> Path:
+    target_root = Path(transaction.target_root)
     resolved_root = target_root.resolve(strict=True)
     if target_root != resolved_root or not resolved_root.is_dir():
-        raise PlanPreconditionError("plan target root is not a canonical directory")
+        raise TransactionPreconditionError(
+            "transaction target root is not a canonical directory"
+        )
     mutating_targets: set[str] = set()
-    for action in plan.actions:
+    for action in transaction.actions:
         _safe_repository_path(resolved_root, action.target_path)
         if action.source_path is not None:
             _safe_repository_path(resolved_root, action.source_path)
             if action.source_path == action.target_path:
-                raise PlanPreconditionError(
+                raise TransactionPreconditionError(
                     f"source and target paths are identical: {action.target_path}"
                 )
         if action.kind in {
@@ -99,7 +101,7 @@ def _validate_plan_paths(plan: GovernancePlan) -> Path:
             ActionKind.DELETE,
         }:
             if action.target_path in mutating_targets:
-                raise PlanPreconditionError(
+                raise TransactionPreconditionError(
                     f"multiple mutating actions target {action.target_path}"
                 )
             mutating_targets.add(action.target_path)
@@ -107,43 +109,43 @@ def _validate_plan_paths(plan: GovernancePlan) -> Path:
 
 
 def _validate_all_preconditions(
-    plan: GovernancePlan,
+    transaction: GovernanceTransaction,
     target_root: Path,
 ) -> None:
-    for action in plan.actions:
+    for action in transaction.actions:
         target = _safe_repository_path(target_root, action.target_path)
         if fingerprint_path(target) != action.target_before:
-            raise PlanPreconditionError(
+            raise TransactionPreconditionError(
                 f"fingerprint changed for target {action.target_path}"
             )
         if action.source_path is not None:
             assert action.source_before is not None
             source = _safe_repository_path(target_root, action.source_path)
             if fingerprint_path(source) != action.source_before:
-                raise PlanPreconditionError(
+                raise TransactionPreconditionError(
                     f"fingerprint changed for source {action.source_path}"
                 )
 
 
 def _validate_rendered_artifacts(
-    plan: GovernancePlan,
+    transaction: GovernanceTransaction,
     artifact_root: Path,
 ) -> dict[str, bytes]:
     rendered_root = artifact_root / "rendered"
     rendered: dict[str, bytes] = {}
-    for action in plan.actions:
+    for action in transaction.actions:
         if action.output_sha256 is None:
             continue
         artifact = rendered_root / f"{action.action_id}.content"
         if artifact.is_symlink() or not artifact.is_file():
-            raise PlanArtifactError(
+            raise TransactionArtifactError(
                 f"rendered artifact missing or unsafe for {action.action_id}"
             )
         body = artifact.read_bytes()
         from .models import sha256_bytes
 
         if sha256_bytes(body) != action.output_sha256:
-            raise PlanArtifactError(
+            raise TransactionArtifactError(
                 f"rendered artifact hash mismatch for {action.action_id}"
             )
         rendered[action.action_id] = body
@@ -162,19 +164,19 @@ def _stage_outputs(rendered: dict[str, bytes], staging_root: Path) -> dict[str, 
     return staged
 
 
-def _target_mode(action: PlannedAction, target_root: Path) -> int:
+def _target_mode(action: TransactionAction, target_root: Path) -> int:
     target = target_root / action.target_path
     if target.is_file() and not target.is_symlink():
-        return stat.S_IMODE(target.stat(follow_symlinks=False).st_mode)
+        return stat.S_IMODE(os.stat(target, follow_symlinks=False).st_mode)
     if action.source_path is not None:
         source = target_root / action.source_path
         if source.is_file() and not source.is_symlink():
-            return stat.S_IMODE(source.stat(follow_symlinks=False).st_mode)
+            return stat.S_IMODE(os.stat(source, follow_symlinks=False).st_mode)
     return 0o644
 
 
 def _atomic_replace_target(
-    action: PlannedAction,
+    action: TransactionAction,
     target_root: Path,
     staged_path: Path,
 ) -> None:
@@ -201,26 +203,26 @@ def _atomic_replace_target(
         temporary_path.unlink(missing_ok=True)
         raise
     if fingerprint_path(target).sha256 != action.output_sha256:
-        raise PlanArtifactError(
+        raise TransactionArtifactError(
             f"target hash mismatch after replace for {action.target_path}"
         )
 
 
 def _verify_written_targets(
-    actions: tuple[PlannedAction, ...],
+    actions: tuple[TransactionAction, ...],
     target_root: Path,
 ) -> None:
     for action in actions:
         if action.output_sha256 is None or action.target_path == MANIFEST_PATH:
             continue
         if fingerprint_path(target_root / action.target_path).sha256 != action.output_sha256:
-            raise PlanArtifactError(
+            raise TransactionArtifactError(
                 f"target hash mismatch before source deletion for {action.target_path}"
             )
 
 
 def _remove_sources_and_files(
-    actions: tuple[PlannedAction, ...],
+    actions: tuple[TransactionAction, ...],
     target_root: Path,
 ) -> list[str]:
     removed: list[str] = []
@@ -232,12 +234,12 @@ def _remove_sources_and_files(
             continue
         target = target_root / action.target_path
         if fingerprint_path(target).sha256 != action.output_sha256:
-            raise PlanArtifactError(
+            raise TransactionArtifactError(
                 f"target hash mismatch before deleting {action.source_path}"
             )
         source = _safe_repository_path(target_root, action.source_path)
         if fingerprint_path(source) != action.source_before:
-            raise PlanPreconditionError(
+            raise TransactionPreconditionError(
                 f"fingerprint changed before deletion for source {action.source_path}"
             )
         source.unlink()
@@ -251,7 +253,7 @@ def _remove_sources_and_files(
             continue
         if target.exists():
             if fingerprint_path(target) != action.target_before:
-                raise PlanPreconditionError(
+                raise TransactionPreconditionError(
                     "fingerprint changed before deletion for target "
                     f"{action.target_path}"
                 )
@@ -261,7 +263,7 @@ def _remove_sources_and_files(
 
 
 def _remove_directories(
-    actions: tuple[PlannedAction, ...],
+    actions: tuple[TransactionAction, ...],
     target_root: Path,
 ) -> tuple[list[str], list[str]]:
     removed: list[str] = []
@@ -313,12 +315,12 @@ def verify_governance(
     )
 
 
-def apply_plan(plan_path: Path) -> ApplyResult:
-    plan_path = Path(plan_path).resolve()
-    plan = _load_valid_plan(plan_path)
-    target_root = _validate_plan_paths(plan)
-    _validate_all_preconditions(plan, target_root)
-    rendered = _validate_rendered_artifacts(plan, plan_path.parent)
+def apply_transaction(transaction_path: Path) -> ApplyResult:
+    transaction_path = Path(transaction_path).resolve()
+    transaction = _load_valid_transaction(transaction_path)
+    target_root = _validate_transaction_paths(transaction)
+    _validate_all_preconditions(transaction, target_root)
+    rendered = _validate_rendered_artifacts(transaction, transaction_path.parent)
 
     created: list[str] = []
     updated: list[str] = []
@@ -326,7 +328,7 @@ def apply_plan(plan_path: Path) -> ApplyResult:
         staged = _stage_outputs(rendered, Path(directory))
         non_manifest_actions = tuple(
             action
-            for action in plan.actions
+            for action in transaction.actions
             if action.output_sha256 is not None
             and action.target_path != MANIFEST_PATH
         )
@@ -337,20 +339,22 @@ def apply_plan(plan_path: Path) -> ApplyResult:
             else:
                 created.append(action.target_path)
 
-        _verify_written_targets(plan.actions, target_root)
-        removed = _remove_sources_and_files(plan.actions, target_root)
+        _verify_written_targets(transaction.actions, target_root)
+        removed = _remove_sources_and_files(transaction.actions, target_root)
         removed_directories, warnings = _remove_directories(
-            plan.actions, target_root
+            transaction.actions, target_root
         )
 
         manifest_actions = [
             action
-            for action in plan.actions
+            for action in transaction.actions
             if action.output_sha256 is not None
             and action.target_path == MANIFEST_PATH
         ]
         if len(manifest_actions) > 1:
-            raise PlanPreconditionError("plan contains multiple manifest writes")
+            raise TransactionPreconditionError(
+                "transaction contains multiple manifest writes"
+            )
         if manifest_actions:
             action = manifest_actions[0]
             _atomic_replace_target(action, target_root, staged[action.action_id])
@@ -367,7 +371,7 @@ def apply_plan(plan_path: Path) -> ApplyResult:
         and verification.manifest_valid
         and verification.single_spec_source
     ):
-        raise PlanArtifactError(
+        raise TransactionArtifactError(
             "post-apply governance verification failed: "
             f"state={verification.state.value}, "
             f"manifest_valid={verification.manifest_valid}, "

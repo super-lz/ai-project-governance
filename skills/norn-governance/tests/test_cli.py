@@ -65,16 +65,21 @@ class NornGovernanceCliTests(unittest.TestCase):
             artifacts,
         )
 
-    def test_analyze_empty_project_writes_plan_but_not_project_files(self) -> None:
+    def test_analyze_empty_project_writes_transaction_but_not_project_files(self) -> None:
         target = self.make_target()
         before = tuple(target.rglob("*"))
 
         report = self.analyze(target)
 
         self.assertEqual(report["command"], "analyze")
-        self.assertEqual(report["project_state"], "uninitialized")
+        self.assertEqual(report["structure_state"], "uninitialized")
         self.assertTrue(report["executable"])
-        self.assertTrue(Path(report["plan_path"]).is_file())
+        self.assertFalse(report["semantic_review_required"])
+        self.assertTrue(Path(report["transaction_path"]).is_file())
+        self.assertIn(
+            "arbitrary document role correctness",
+            report["verification_scope"]["excludes"],
+        )
         self.assertEqual(tuple(target.rglob("*")), before)
         self.assertEqual(
             {action["target_path"] for action in report["actions"]},
@@ -91,7 +96,8 @@ class NornGovernanceCliTests(unittest.TestCase):
 
         report = self.analyze(target)
 
-        self.assertEqual(report["project_state"], "legacy")
+        self.assertEqual(report["structure_state"], "legacy")
+        self.assertTrue(report["semantic_review_required"])
         self.assertEqual(
             {
                 action["source_path"]
@@ -113,7 +119,7 @@ class NornGovernanceCliTests(unittest.TestCase):
         }
         self.assertEqual(after, before)
 
-    def test_default_scope_leaves_extra_legacy_content_out_of_plan(self) -> None:
+    def test_default_scope_leaves_extra_legacy_content_out_of_transaction(self) -> None:
         """防止普通迁移在未获授权时扩大到项目自有文档。"""
         target = self.copy_legacy_template()
         extra = target / "docs/appendix/architecture.md"
@@ -153,6 +159,7 @@ class NornGovernanceCliTests(unittest.TestCase):
         )
 
         self.assertEqual(report["legacy_content_scopes"], ["appendix", "spec"])
+        self.assertTrue(report["semantic_review_required"])
         relocations = {
             (action["source_path"], action["target_path"], action["kind"])
             for action in report["actions"]
@@ -188,11 +195,11 @@ class NornGovernanceCliTests(unittest.TestCase):
             "apply",
             "--target",
             target,
-            "--plan",
-            report["plan_path"],
+            "--transaction",
+            report["transaction_path"],
         )
 
-        self.assertEqual(applied["verification"]["state"], "current")
+        self.assertEqual(applied["verification"]["structure_state"], "current")
         self.assertEqual(
             (target / "norn-governance/appendix/diagram.png").read_bytes(),
             appendix_body,
@@ -210,13 +217,13 @@ class NornGovernanceCliTests(unittest.TestCase):
             "outside governance trees\n",
         )
 
-    def test_apply_requires_plan_artifact(self) -> None:
+    def test_apply_requires_transaction_artifact(self) -> None:
         target = self.make_target()
 
         completed = self.run_cli_raw("apply", "--target", target)
 
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("--plan", completed.stderr)
+        self.assertIn("--transaction", completed.stderr)
 
     def test_analyze_then_apply_initializes_and_verifies_project(self) -> None:
         target = self.make_target()
@@ -226,34 +233,38 @@ class NornGovernanceCliTests(unittest.TestCase):
             "apply",
             "--target",
             target,
-            "--plan",
-            analysis["plan_path"],
+            "--transaction",
+            analysis["transaction_path"],
         )
 
         self.assertEqual(applied["command"], "apply")
-        self.assertEqual(applied["verification"]["state"], "current")
+        self.assertEqual(applied["verification"]["structure_state"], "current")
         self.assertTrue(applied["verification"]["manifest_valid"])
         self.assertTrue(applied["verification"]["single_spec_source"])
+        self.assertIn(
+            "main specification semantic completeness",
+            applied["verification"]["scope"]["excludes"],
+        )
         self.assertEqual(set(applied["created"]), EXPECTED_FILES)
         self.assertFalse((target / "docs").exists())
         self.assertFalse((target / "norn-governance/plans").exists())
 
-    def test_apply_rejects_tampered_plan_digest(self) -> None:
+    def test_apply_rejects_tampered_transaction_digest(self) -> None:
         target = self.make_target()
         analysis = self.analyze(target)
-        plan_path = Path(analysis["plan_path"])
-        payload = json.loads(plan_path.read_text(encoding="utf-8"))
+        transaction_path = Path(analysis["transaction_path"])
+        payload = json.loads(transaction_path.read_text(encoding="utf-8"))
         payload["target_root"] = str(self.make_target())
-        plan_path.write_text(json.dumps(payload), encoding="utf-8")
+        transaction_path.write_text(json.dumps(payload), encoding="utf-8")
 
         completed = self.run_cli_raw(
-            "apply", "--target", target, "--plan", plan_path
+            "apply", "--target", target, "--transaction", transaction_path
         )
 
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("plan digest mismatch", completed.stderr)
+        self.assertIn("transaction digest mismatch", completed.stderr)
 
-    def test_apply_rejects_target_that_differs_from_plan(self) -> None:
+    def test_apply_rejects_target_that_differs_from_transaction(self) -> None:
         target = self.make_target()
         other_target = self.make_target()
         analysis = self.analyze(target)
@@ -262,12 +273,12 @@ class NornGovernanceCliTests(unittest.TestCase):
             "apply",
             "--target",
             other_target,
-            "--plan",
-            analysis["plan_path"],
+            "--transaction",
+            analysis["transaction_path"],
         )
 
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("target does not match plan", completed.stderr)
+        self.assertIn("target does not match transaction", completed.stderr)
         self.assertEqual(tuple(other_target.iterdir()), ())
 
     def test_human_analysis_contains_decision_sections(self) -> None:
@@ -290,11 +301,12 @@ class NornGovernanceCliTests(unittest.TestCase):
             "删除",
             "风险",
             "验证",
+            "机器验证边界",
         ):
             self.assertIn(heading, completed.stdout)
         self.assertIn("Norn Governance", completed.stdout)
 
-    def test_resolve_adopt_template_rebuilds_executable_plan(self) -> None:
+    def test_resolve_adopt_template_rebuilds_executable_transaction(self) -> None:
         target = self.copy_legacy_template()
         with (target / "docs/AGENTS.md").open("a", encoding="utf-8") as stream:
             stream.write("\n## Project-specific docs rule\n")
@@ -304,7 +316,7 @@ class NornGovernanceCliTests(unittest.TestCase):
             for action in analysis["actions"]
             if action["target_path"] == "norn-governance/AGENTS.md"
         )
-        resolutions_path = Path(analysis["plan_path"]).parent / "resolutions.json"
+        resolutions_path = Path(analysis["transaction_path"]).parent / "resolutions.json"
         resolutions_path.write_text(
             json.dumps(
                 {
@@ -323,8 +335,8 @@ class NornGovernanceCliTests(unittest.TestCase):
             "resolve",
             "--target",
             target,
-            "--plan",
-            analysis["plan_path"],
+            "--transaction",
+            analysis["transaction_path"],
             "--resolutions",
             resolutions_path,
         )
@@ -335,10 +347,10 @@ class NornGovernanceCliTests(unittest.TestCase):
             "apply",
             "--target",
             target,
-            "--plan",
-            resolved["plan_path"],
+            "--transaction",
+            resolved["transaction_path"],
         )
-        self.assertEqual(applied["verification"]["state"], "current")
+        self.assertEqual(applied["verification"]["structure_state"], "current")
 
 
 if __name__ == "__main__":

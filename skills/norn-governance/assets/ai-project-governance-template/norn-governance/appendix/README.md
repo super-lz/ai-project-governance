@@ -1,9 +1,9 @@
 <!-- norn:managed:start appendix-governance -->
-# 附录材料
+# Appendix
 
-本目录保存给人快速理解项目的附录材料，例如流程图、草图或说明图。
+This directory contains optional, non-normative evidence and explanatory material used to understand why an accepted specification boundary exists.
 
-这里的内容不作为代码实现、测试和验收的权威依据。实现时以 `norn-governance/spec/` 中的实现规格为准。
+Normal development must not require reading the appendix. If current behavior, scope, a safety rule, or an acceptance condition exists only here, the main specification is incomplete and must be corrected.
 
-附录材料只在明显过期且会误导读者时维护。
+Do not place active plans, current requirements, implementation authority, or duplicated code documentation here. Delete material that no longer provides unique evidence or useful explanation.
 <!-- norn:managed:end appendix-governance -->

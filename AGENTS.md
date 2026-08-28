@@ -53,3 +53,14 @@ Classify documents by content, never by filename or old directory alone. If one 
 - Consider failure, cancellation, cross-platform, security, privacy, migration, and recovery effects in proportion to the change.
 - Report only verification that was actually run. A structurally current Norn installation does not prove that project semantics are complete or correctly classified.
 <!-- norn:managed:end core-governance -->
+
+# ai-project-governance repository rules
+
+This repository is the canonical implementation of Norn Governance.
+
+- `norn-governance/spec/main-spec.md` owns Norn's accepted product and behavioral contract.
+- `skills/norn-governance/` is the canonical Skill source. The installed copy under `~/.codex/skills/norn-governance/` is a release artifact, never the editing source.
+- `template/` and `skills/norn-governance/assets/ai-project-governance-template/` must remain byte-identical for governed files.
+- Changes to managed behavior require the main specification, templates, Skill instructions, deterministic engine, and tests to remain mutually consistent.
+- Run the complete unit/CLI suite, Skill validation, template comparison, fresh initialization, legacy migration, and `git diff --check` before claiming completion.
+- Synchronize the installed Skill only after repository validation. Commit and push only when explicitly requested.

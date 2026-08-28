@@ -11,7 +11,7 @@ from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
 
-PLAN_SCHEMA_VERSION = 1
+TRANSACTION_SCHEMA_VERSION = 1
 MANIFEST_SCHEMA_VERSION = 1
 
 
@@ -184,7 +184,7 @@ class PathFingerprint:
 
 
 @dataclass(frozen=True)
-class PlannedAction:
+class TransactionAction:
     action_id: str
     kind: ActionKind
     source_path: str | None
@@ -269,7 +269,7 @@ class PlannedAction:
         }
 
     @classmethod
-    def from_dict(cls, payload: Mapping[str, Any]) -> PlannedAction:
+    def from_dict(cls, payload: Mapping[str, Any]) -> TransactionAction:
         source_before = payload.get("source_before")
         target_before = _require_mapping(payload.get("target_before"), "target_before")
         return cls(
@@ -301,19 +301,19 @@ class PlannedAction:
 
 
 @dataclass(frozen=True)
-class GovernancePlan:
-    plan_schema_version: int
+class GovernanceTransaction:
+    transaction_schema_version: int
     target_root: str
     project_state: ProjectState
     template_version: int
-    actions: tuple[PlannedAction, ...]
+    actions: tuple[TransactionAction, ...]
     conflicts: tuple[str, ...]
-    plan_sha256: str
+    transaction_sha256: str
 
     def __post_init__(self) -> None:
-        if self.plan_schema_version != PLAN_SCHEMA_VERSION:
+        if self.transaction_schema_version != TRANSACTION_SCHEMA_VERSION:
             raise ValueError(
-                f"unsupported plan schema: {self.plan_schema_version}"
+                f"unsupported transaction schema: {self.transaction_schema_version}"
             )
         if not isinstance(self.project_state, ProjectState):
             object.__setattr__(
@@ -326,14 +326,14 @@ class GovernancePlan:
         object.__setattr__(self, "conflicts", tuple(self.conflicts))
         if not isinstance(self.target_root, str) or not Path(self.target_root).is_absolute():
             raise ValueError("target_root must be an absolute path")
-        if not all(isinstance(action, PlannedAction) for action in self.actions):
-            raise ValueError("actions must contain PlannedAction values")
+        if not all(isinstance(action, TransactionAction) for action in self.actions):
+            raise ValueError("actions must contain TransactionAction values")
         action_ids = [action.action_id for action in self.actions]
         if len(set(action_ids)) != len(action_ids):
             raise ValueError("action_id values must be unique")
         if not all(isinstance(item, str) and item for item in self.conflicts):
             raise ValueError("conflicts must contain nonempty strings")
-        _require_sha256(self.plan_sha256, "plan_sha256", optional=False)
+        _require_sha256(self.transaction_sha256, "transaction_sha256", optional=False)
 
     @classmethod
     def build(
@@ -342,9 +342,9 @@ class GovernancePlan:
         target_root: str,
         project_state: ProjectState,
         template_version: int,
-        actions: Iterable[PlannedAction],
+        actions: Iterable[TransactionAction],
         conflicts: Iterable[str],
-    ) -> GovernancePlan:
+    ) -> GovernanceTransaction:
         actions_tuple = tuple(actions)
         conflicts_tuple = tuple(conflicts)
         payload = cls._payload_without_digest(
@@ -355,13 +355,13 @@ class GovernancePlan:
             conflicts=conflicts_tuple,
         )
         return cls(
-            plan_schema_version=PLAN_SCHEMA_VERSION,
+            transaction_schema_version=TRANSACTION_SCHEMA_VERSION,
             target_root=target_root,
             project_state=project_state,
             template_version=template_version,
             actions=actions_tuple,
             conflicts=conflicts_tuple,
-            plan_sha256=sha256_bytes(canonical_json_bytes(payload)),
+            transaction_sha256=sha256_bytes(canonical_json_bytes(payload)),
         )
 
     @staticmethod
@@ -370,7 +370,7 @@ class GovernancePlan:
         target_root: str,
         project_state: ProjectState,
         template_version: int,
-        actions: tuple[PlannedAction, ...],
+        actions: tuple[TransactionAction, ...],
         conflicts: tuple[str, ...],
     ) -> dict[str, Any]:
         state = (
@@ -379,7 +379,7 @@ class GovernancePlan:
             else ProjectState(project_state).value
         )
         return {
-            "plan_schema_version": PLAN_SCHEMA_VERSION,
+            "transaction_schema_version": TRANSACTION_SCHEMA_VERSION,
             "target_root": target_root,
             "project_state": state,
             "template_version": template_version,
@@ -405,34 +405,34 @@ class GovernancePlan:
             actions=self.actions,
             conflicts=self.conflicts,
         )
-        payload["plan_sha256"] = self.plan_sha256
+        payload["transaction_sha256"] = self.transaction_sha256
         return payload
 
     @classmethod
-    def from_dict(cls, payload: Mapping[str, Any]) -> GovernancePlan:
+    def from_dict(cls, payload: Mapping[str, Any]) -> GovernanceTransaction:
         actions_payload = payload.get("actions")
         if not isinstance(actions_payload, list):
             raise ValueError("actions must be an array")
         conflicts_payload = payload.get("conflicts")
         if not isinstance(conflicts_payload, list):
             raise ValueError("conflicts must be an array")
-        plan = cls(
-            plan_schema_version=payload.get("plan_schema_version"),
+        transaction = cls(
+            transaction_schema_version=payload.get("transaction_schema_version"),
             target_root=payload.get("target_root"),
             project_state=_parse_enum(
                 ProjectState, payload.get("project_state"), "project state"
             ),
             template_version=payload.get("template_version"),
             actions=tuple(
-                PlannedAction.from_dict(_require_mapping(item, "action"))
+                TransactionAction.from_dict(_require_mapping(item, "action"))
                 for item in actions_payload
             ),
             conflicts=tuple(conflicts_payload),
-            plan_sha256=payload.get("plan_sha256"),
+            transaction_sha256=payload.get("transaction_sha256"),
         )
-        if plan.plan_sha256 != plan.expected_digest():
-            raise ValueError("plan digest mismatch")
-        return plan
+        if transaction.transaction_sha256 != transaction.expected_digest():
+            raise ValueError("transaction digest mismatch")
+        return transaction
 
 
 @dataclass(frozen=True)
@@ -530,17 +530,17 @@ class NornManifest:
         )
 
 
-def write_plan(plan: GovernancePlan, directory: Path) -> Path:
-    if plan.plan_sha256 != plan.expected_digest():
-        raise ValueError("plan digest mismatch")
+def write_transaction(transaction: GovernanceTransaction, directory: Path) -> Path:
+    if transaction.transaction_sha256 != transaction.expected_digest():
+        raise ValueError("transaction digest mismatch")
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    plan_path = directory / "plan.json"
+    transaction_path = directory / "transaction.json"
     payload = json.dumps(
-        plan.to_dict(), ensure_ascii=False, sort_keys=True, indent=2
+        transaction.to_dict(), ensure_ascii=False, sort_keys=True, indent=2
     ).encode("utf-8") + b"\n"
     descriptor, temporary_name = tempfile.mkstemp(
-        prefix=".plan.", suffix=".tmp", dir=directory
+        prefix=".transaction.", suffix=".tmp", dir=directory
     )
     temporary_path = Path(temporary_name)
     try:
@@ -548,16 +548,16 @@ def write_plan(plan: GovernancePlan, directory: Path) -> Path:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary_path, plan_path)
+        os.replace(temporary_path, transaction_path)
     except BaseException:
         temporary_path.unlink(missing_ok=True)
         raise
-    return plan_path
+    return transaction_path
 
 
-def load_plan(path: Path) -> GovernancePlan:
+def load_transaction(path: Path) -> GovernanceTransaction:
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"invalid plan file: {exc}") from exc
-    return GovernancePlan.from_dict(_require_mapping(payload, "plan"))
+        raise ValueError(f"invalid transaction file: {exc}") from exc
+    return GovernanceTransaction.from_dict(_require_mapping(payload, "transaction"))
