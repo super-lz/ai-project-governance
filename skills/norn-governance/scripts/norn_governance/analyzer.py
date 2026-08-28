@@ -1167,6 +1167,7 @@ def resolve_conflicts(
 
 def _blocking_state_actions(
     target_root: Path,
+    artifact_root: Path,
     state: ProjectState,
 ) -> list[PlannedAction]:
     if state is ProjectState.AMBIGUOUS:
@@ -1195,7 +1196,12 @@ def _blocking_state_actions(
                 evidence=("manifest validation or version compatibility failed",),
             )
         ]
-    return [
+    actions = [
+        action
+        for action in _analyze_uninitialized(target_root, artifact_root)
+        if action.target_path != ROOT_AGENTS
+    ]
+    actions.append(
         _conflict_action(
             target_root,
             ROOT_AGENTS,
@@ -1203,7 +1209,8 @@ def _blocking_state_actions(
             evidence=("root content differs from current and legacy templates",),
             allowed_resolutions=(ConflictChoice.SEMANTIC_MERGE,),
         )
-    ]
+    )
+    return actions
 
 
 def analyze_governance(
@@ -1246,7 +1253,7 @@ def analyze_governance(
         )
         handled_explicit_content = True
     else:
-        actions = _blocking_state_actions(target_root, state)
+        actions = _blocking_state_actions(target_root, artifact_root, state)
 
     explicit_actions: list[PlannedAction] = []
     if normalized_scopes and not handled_explicit_content:

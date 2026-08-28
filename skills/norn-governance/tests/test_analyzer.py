@@ -383,6 +383,46 @@ class GovernanceAnalyzerTests(unittest.TestCase):
         )
         self.assertEqual(load_plan(artifacts / "plan.json").to_dict(), plan.to_dict())
 
+    def test_custom_root_can_resolve_initialization_without_missing_actions(self) -> None:
+        target = self.make_target()
+        self.write(target, "AGENTS.md", "# Existing project rules\n\nKeep this.\n")
+        artifacts = self.artifacts()
+        original = analyze_governance(target, artifacts)
+        conflict = self.action_for(
+            original,
+            "AGENTS.md",
+            ActionKind.CONFLICT,
+        )
+        semantic_path = artifacts / "semantic-input.md"
+        semantic_body = (
+            (self.asset_root / "AGENTS.md").read_text(encoding="utf-8")
+            + "\n# Existing project rules\n\nKeep this.\n"
+        ).encode("utf-8")
+        semantic_path.write_bytes(semantic_body)
+
+        resolved = resolve_conflicts(
+            original,
+            (
+                ConflictResolution(
+                    action_id=conflict.action_id,
+                    choice=ConflictChoice.SEMANTIC_MERGE,
+                    rendered_path=str(semantic_path),
+                    rendered_sha256=hashlib.sha256(semantic_body).hexdigest(),
+                ),
+            ),
+            artifacts,
+        )
+
+        self.assertFalse(resolved.conflicts)
+        self.assertEqual(
+            {
+                action.target_path
+                for action in resolved.actions
+                if action.kind in {ActionKind.CREATE, ActionKind.MERGE}
+            },
+            {*MANAGED_PATHS, "norn-governance/.norn.json"},
+        )
+
     def test_current_project_has_only_keep_actions(self) -> None:
         target = self.copy_current_template()
 
