@@ -46,7 +46,7 @@ description: 初始化、迁移、升级或审计项目中的 Norn 治理，维�
 
 ## 开发计划
 
-`norn-governance/plans/` 是项目开发中的短期续接状态，不是治理机器事务。当前治理任务本身预计跨会话、跨设备或含多个依赖检查点时，读取并遵循 [references/development-plans.md](references/development-plans.md)。简单单会话任务不创建计划；完成或取消后删除计划。
+`norn-governance/plans/` 是项目开发中的短期续接状态，不是治理机器事务。当前治理任务本身预计跨会话、跨设备或含多个依赖检查点时，先检查相关规格、代码、测试和 Git 状态，再读取并遵循 [references/development-plans.md](references/development-plans.md)。不得只把用户请求或聊天摘要填进模板；保存前必须把需求变成有来源和验收证据的明确条目，把实现变成关联具体目标与验证的有序步骤，并消除“实现功能”“补充测试”“继续处理”一类无法直接执行的描述。简单单会话任务不创建计划；完成或取消后删除计划。
 
 ## 边界
 

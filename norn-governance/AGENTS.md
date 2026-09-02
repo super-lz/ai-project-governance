@@ -13,7 +13,10 @@ This directory separates durable semantics, active development state, and option
 
 - Create a plan when work is expected to outlive the current session or device, or when several dependent checkpoints make reconstruction costly or risky.
 - Name it with a stable date and task slug: `YYYY-MM-DD-<task>.md`.
-- Record the goal and non-goals, authority references, branch or worktree context, completed checkpoints, remaining work, verification state, blockers or pending decisions, and one exact next step.
+- Inspect the relevant specification, code, tests, and Git state before writing. Record verified facts separately from assumptions and unresolved decisions; a plan must not substitute for discovery.
+- Define an observable outcome, explicit numbered requirements with their authority or confirmation source and acceptance evidence, non-goals, and the verified baseline.
+- Use ordered `pending`, `in_progress`, or `completed` steps. Every implementation step names the requirements it satisfies, repository-relative files or stable symbols, the intended behavior change, dependencies or material risks, and its verification. If a target is unknown, use a bounded discovery step with a concrete search and expected decision instead of inventing a path.
+- Allow at most one `in_progress` step and keep one exact next action. Phrases such as “implement the feature”, “add tests”, or “update docs” are not actionable without targets, behavior, and verification.
 - Use repository-relative paths and stable identifiers. Never store secrets, file bodies, temporary machine paths, command transcripts, or reusable approvals.
 - On resume, verify the repository and specification before trusting the plan. Changed facts make the plan stale navigation, not authority.
 - Update the plan only at meaningful checkpoints. Commit or push it with the development branch only when the user authorizes those Git actions.

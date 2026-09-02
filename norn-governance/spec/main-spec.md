@@ -1,7 +1,7 @@
 # Norn Governance main specification
 
 - Decision status: **Accepted**
-- Current delivery scope: **Governance model version 2**
+- Current delivery scope: **Governance model version 3**
 - Implementation status: **Implemented in this repository**
 
 This file is Norn's semantic authority. Code and tests describe the current implementation, Git records evolution, active plans preserve unfinished development state, and appendix material—when present—provides non-authoritative evidence only.
@@ -37,7 +37,7 @@ When stable code behavior is ahead of the specification, the same change must re
 
 `norn-governance/plans/` contains one concise file per active development task when work is expected to continue across a session or device, or when dependent checkpoints make reconstruction materially risky.
 
-A plan records goal and non-goals, authority references, branch context, verified checkpoints, remaining work, validation state, blockers, and one exact next action. It is temporary navigation, not product authority, implementation truth, history, or reusable execution permission.
+A plan is written only after inspecting the relevant specification, code, tests, and Git state. It records an observable outcome, explicit acceptance-bound requirements and non-goals, a verified baseline, ordered target-specific implementation steps, validation state, blockers, and one exact next action. It is temporary navigation, not product authority, implementation truth, history, or reusable execution permission.
 
 Plans may travel with a development branch when the user authorizes commit and push. They are updated at meaningful checkpoints and deleted on completion or cancellation after durable outcomes are captured in the specification, code, tests, and Git history. Blocked plans may remain only with an explicit unblock condition and resume action. Empty plan directories, indexes, and completed-plan archives are forbidden.
 
@@ -167,7 +167,19 @@ Actions are `create`, `move`, `merge`, `delete`, `keep`, or `conflict`. A change
 
 Development plans are ordinary project-owned Markdown files, not inputs to `resolve` or `apply`. On resume, the agent verifies repository identity, branch, Git status, specification, relevant code, tests, and external state before trusting the plan. Changed facts require updating or discarding it.
 
-Plans use repository-relative paths and stable identifiers. They must not contain file bodies, transcripts, raw logs, secrets, personal data, temporary absolute paths, machine transaction artifacts, hashes used as reusable approval, or hidden authorization.
+Before creating a plan, the agent investigates enough of the current system to distinguish verified facts from assumptions and unresolved decisions. A plan must contain:
+
+- an observable completed outcome and explicit non-goals;
+- numbered requirements whose authority or confirmation source and acceptance evidence are explicit;
+- a verified baseline referencing relevant specification sections, repository-relative code paths, stable symbols, tests, and branch or base context;
+- ordered steps with `pending`, `in_progress`, or `completed` state, with at most one step in progress;
+- for each implementation step, the requirements satisfied, target files or stable symbols, intended behavior change, dependencies or material risks, and concrete verification;
+- for an unknown target, a bounded discovery step that names the search or inspection and the decision it must produce instead of inventing a path;
+- completed and pending verification, blockers or decisions with their resume condition, and one exact next action.
+
+Generic steps such as “implement the feature”, “add tests”, “update documentation”, or “continue processing” are invalid unless they also identify the target, behavior, and verification. Durable requirements belong in the main specification; a plan may reference a newly confirmed requirement only while its specification writeback remains an explicit implementation step.
+
+Plans use repository-relative paths and stable identifiers. They must not contain file bodies, transcripts, raw logs, secrets, personal data, temporary absolute paths, machine transaction artifacts, hashes used as reusable approval, or hidden authorization. Norn defines the plan-quality contract and agent instructions; deterministic governance transactions do not generate or approve development plans.
 
 ## Safety and recovery
 
@@ -192,6 +204,7 @@ Automated verification must cover:
 - mode preservation on supported Python versions;
 - disclosure of structural verification scope and semantic exclusions;
 - absence of an initialized empty `plans/` directory;
+- development-plan guidance that requires code-informed baselines, explicit acceptance-bound requirements, target-specific steps, concrete verification, and one active next action;
 - equality of repository templates, Skill assets, and the installed Skill after release;
 - realistic document-consolidation instructions that classify content instead of dumping all documents into appendix.
 
@@ -202,12 +215,14 @@ The release acceptance sequence is:
 3. template and asset copies match byte-for-byte;
 4. fresh initialization and legacy migration fixtures finish structurally current;
 5. a realistic documentation-consolidation review proves that current normative content is promoted to the main specification;
-6. Git diff contains only the approved scope;
-7. the installed Skill is synchronized only after repository validation.
+6. a realistic development-plan review proves that requirements, implementation targets, step states, verification, and resume state are actionable rather than generic;
+7. Git diff contains only the approved scope;
+8. the installed Skill is synchronized only after repository validation.
 
 ## Non-goals
 
 - Treating plans or appendix files as a fourth authority.
+- Deterministically generating, approving, or executing development plans as governance transactions.
 - Automatically interpreting arbitrary Markdown with the deterministic engine.
 - Moving every project document into Norn merely because governance is adopted.
 - Maintaining completed-plan archives, indexes, or placeholders.

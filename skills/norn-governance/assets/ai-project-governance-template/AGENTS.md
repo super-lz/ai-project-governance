@@ -24,9 +24,9 @@ Use these sources for different questions:
 
 1. Identify the real user outcome, the smallest complete boundary, explicit non-goals, and how the result will be verified.
 2. Reconcile the request with the main specification and current code. A new or changed durable requirement must be summarized and confirmed before the specification is changed or implementation begins.
-3. Create an active development plan only when the task is expected to remain unfinished across a session or device, or when dependent checkpoints make reliable resumption materially valuable. Simple work stays in the current task context.
+3. Create an active development plan only when the task is expected to remain unfinished across a session or device, or when dependent checkpoints make reliable resumption materially valuable. Before saving it, inspect the relevant specification, code, tests, and Git state; record an observable outcome, explicit requirements and non-goals, a verified baseline, and ordered steps tied to repository-relative targets and verification. Unknown locations become bounded discovery steps rather than invented paths. Simple work stays in the current task context.
 4. Implement against the main specification, using code and tests to preserve implementation truth. Do not add infrastructure or abstractions without a current measured need.
-5. Update an active plan at meaningful checkpoints with completed work, remaining work, verification, blockers, and the exact next step. Do not turn it into a transcript.
+5. Update an active plan at meaningful checkpoints. Keep step states current, allow at most one active step, preserve verification evidence and blockers, and name one exact next action. Do not turn it into a transcript.
 6. Before completion, run proportionate verification and reconcile stable behavior with the main specification.
 7. When the task completes or is cancelled, move durable conclusions into the specification, code, tests, or Git history and delete its active plan. A blocked task may retain its plan with a concrete resume condition.
 
