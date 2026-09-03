@@ -1,7 +1,7 @@
 # Norn Governance main specification
 
 - Decision status: **Accepted**
-- Current delivery scope: **Governance model version 3**
+- Current delivery scope: **Governance model version 4**
 - Implementation status: **Implemented in this repository**
 
 This file is Norn's semantic authority. Code and tests describe the current implementation, Git records evolution, active plans preserve unfinished development state, and appendix material—when present—provides non-authoritative evidence only.
@@ -32,6 +32,16 @@ The main specification may index subordinate specifications only after stable in
 Current reachable code and tests show how the accepted specification is implemented. Git history records when and why specification and implementation changed. Neither chat nor a plan replaces source inspection or version history.
 
 When stable code behavior is ahead of the specification, the same change must reconcile the specification. When the intended behavior is ambiguous, a product decision is required rather than choosing whichever source is convenient.
+
+### Main specification synchronization notices
+
+Norn makes consequential specification actions visible without emitting a status banner on ordinary replies:
+
+- When a new or changed durable requirement still needs developer confirmation, the notice begins with `🚨`, enumerates the exact semantic changes proposed for the main specification, and explicitly asks whether to confirm or adjust them. An explicit confirmation already present in the current context satisfies this boundary and is not requested again merely for presentation.
+- When reachable code and tests prove an omitted stable behavior and the specification edit is within the developer-authorized change scope, Norn updates the main specification in the same change. Only after the file is actually edited does the notice begin with `⚠️` and enumerate only the semantic writebacks completed.
+- When there is no proposed or completed specification writeback, Norn emits no synchronization notice. It never uses `🔵`, “no writeback”, “no changes found”, or another placeholder status, and it never claims synchronization without an actual main-specification content change.
+
+These notices do not alter the authority model, confirmation boundary, automatic omission-repair conditions, or governance transaction authorization.
 
 ### Active plans: resumable unfinished development
 
@@ -207,6 +217,7 @@ Automated verification must cover:
 - development-plan guidance that requires code-informed baselines, explicit acceptance-bound requirements, target-specific steps, concrete verification, and one active next action;
 - equality of repository templates, Skill assets, and the installed Skill after release;
 - realistic document-consolidation instructions that classify content instead of dumping all documents into appendix.
+- main-specification notices that distinguish confirmation from completed writeback, remain silent when no writeback exists, and upgrade deterministically from the immediately previous managed template while preserving project text outside managed blocks and retaining the existing conflict policy for modified blocks.
 
 The release acceptance sequence is:
 

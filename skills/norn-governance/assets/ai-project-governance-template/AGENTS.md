@@ -32,7 +32,9 @@ Use these sources for different questions:
 
 ## Specification synchronization
 
-- If current, reachable code and tests clearly implement a stable behavior that the specification omits, update the specification in the same change and report the semantic writeback.
+- A new or changed durable requirement must be summarized and confirmed before the specification is changed or implementation begins. If confirmation is still needed, begin a separate notice block with `🚨`, list the exact semantic changes proposed for the main specification, and ask the developer to confirm or adjust them. Do not repeat the question merely to satisfy this format when the developer already confirmed the same changes in the current context.
+- If current, reachable code and tests clearly implement a stable behavior that the specification omits, and the specification edit is within the developer-authorized change scope, update the specification in the same change. After the main specification is actually edited, begin a separate notice block with `⚠️` and list only the semantic writebacks that were completed.
+- Never claim that the main specification was synchronized unless its content was actually changed. When there is no specification writeback to confirm or report, omit the notice entirely: do not emit `🔵`, “no writeback”, “no changes found”, or another placeholder status.
 - If code and specification conflict and the intended behavior is not provable, stop and ask for the product decision; do not choose authority by convenience.
 - Implementation mechanisms that do not affect semantic equivalence stay in code. Promote them only when they become a user promise, cross-boundary contract, safety rule, or acceptance condition.
 - Deferred ideas and appendix statements do not authorize scaffolding or implementation. They must first become accepted current scope in the main specification.

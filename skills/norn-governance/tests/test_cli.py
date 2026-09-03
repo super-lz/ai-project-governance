@@ -248,6 +248,16 @@ class NornGovernanceCliTests(unittest.TestCase):
         self.assertEqual(set(applied["created"]), EXPECTED_FILES)
         self.assertFalse((target / "docs").exists())
         self.assertFalse((target / "norn-governance/plans").exists())
+        root_agents = (target / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("begin a separate notice block with `🚨`", root_agents)
+        self.assertIn("begin a separate notice block with `⚠️`", root_agents)
+        self.assertEqual(root_agents.count("🔵"), 1)
+        self.assertIn("do not emit `🔵`", root_agents)
+        self.assertIn(
+            "Never claim that the main specification was synchronized unless its "
+            "content was actually changed.",
+            root_agents,
+        )
 
     def test_apply_rejects_tampered_transaction_digest(self) -> None:
         target = self.make_target()

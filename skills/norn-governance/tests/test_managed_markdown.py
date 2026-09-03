@@ -139,6 +139,19 @@ class TemplateManifestTests(unittest.TestCase):
                     self.assertEqual(tuple(blocks), block_ids)
                     self.assertEqual(record.base_sha256, blocks[block_ids[0]].sha256)
 
+    def test_current_template_has_non_noisy_specification_notice_policy(self) -> None:
+        root_agents = (self.template_root / "AGENTS.md").read_text(encoding="utf-8")
+
+        self.assertIn("begin a separate notice block with `🚨`", root_agents)
+        self.assertIn("begin a separate notice block with `⚠️`", root_agents)
+        self.assertIn(
+            "Never claim that the main specification was synchronized unless its "
+            "content was actually changed.",
+            root_agents,
+        )
+        self.assertIn("do not emit `🔵`", root_agents)
+        self.assertEqual(root_agents.count("🔵"), 1)
+
     def test_static_manifest_matches_computed_template_manifest(self) -> None:
         computed = template_manifest(self.template_root)
         stored = NornManifest.from_dict(

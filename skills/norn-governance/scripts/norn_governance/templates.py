@@ -13,7 +13,7 @@ from .models import (
 )
 
 
-TEMPLATE_VERSION = 3
+TEMPLATE_VERSION = 4
 MANAGED_PATHS: Mapping[str, tuple[OwnershipKind, tuple[str, ...]]] = {
     "AGENTS.md": (OwnershipKind.MIXED, ("core-governance",)),
     "norn-governance/AGENTS.md": (

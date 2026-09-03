@@ -35,6 +35,7 @@ from norn_governance.analyzer import (  # noqa: E402
     fingerprint_path,
     resolve_conflicts,
 )
+from norn_governance.executor import apply_transaction  # noqa: E402
 from norn_governance.templates import (  # noqa: E402
     MANAGED_PATHS,
     TEMPLATE_VERSION,
@@ -260,6 +261,12 @@ class GovernanceAnalyzerTests(unittest.TestCase):
             / "legacy-templates"
             / "0"
         )
+        self.previous_root_agents = (
+            Path(__file__).resolve().parent
+            / "fixtures"
+            / "template-v3"
+            / "AGENTS.md"
+        )
         self.artifact_counter = 0
 
     def tearDown(self) -> None:
@@ -317,6 +324,27 @@ class GovernanceAnalyzerTests(unittest.TestCase):
         manifest["managed_files"]["AGENTS.md"]["base_sha256"] = hashlib.sha256(
             old_block.encode("utf-8")
         ).hexdigest()
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return target
+
+    def copy_previous_template(self) -> Path:
+        target = self.copy_current_template()
+        root_path = target / "AGENTS.md"
+        root_path.write_bytes(self.previous_root_agents.read_bytes())
+        previous_block = parse_managed_blocks(
+            root_path.read_text(encoding="utf-8")
+        )["core-governance"]
+        manifest_path = target / "norn-governance/.norn.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["template_version"] = TEMPLATE_VERSION - 1
+        for record in manifest["managed_files"].values():
+            record["template_version"] = TEMPLATE_VERSION - 1
+        manifest["managed_files"]["AGENTS.md"][
+            "base_sha256"
+        ] = previous_block.sha256
         manifest_path.write_text(
             json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
             encoding="utf-8",
@@ -732,8 +760,45 @@ class GovernanceAnalyzerTests(unittest.TestCase):
         )
         self.assertEqual(upgraded_manifest.template_version, TEMPLATE_VERSION)
 
+    def test_v3_upgrade_adds_spec_notices_deterministically_and_preserves_project_text(
+        self,
+    ) -> None:
+        self.assertEqual(TEMPLATE_VERSION, 4)
+        target = self.copy_previous_template()
+        project_text = "\n## Project Rule\nKeep this byte-for-byte.\n"
+        self.append(target, "AGENTS.md", project_text)
+        main_spec_before = (
+            target / "norn-governance/spec/main-spec.md"
+        ).read_bytes()
+        first_artifacts = self.artifacts()
+        second_artifacts = self.artifacts()
+
+        first = analyze_governance(target, first_artifacts)
+        second = analyze_governance(target, second_artifacts)
+
+        self.assertEqual(first.project_state, ProjectState.UPGRADEABLE)
+        self.assertEqual(first.to_dict(), second.to_dict())
+        root_action = self.action_for(first, "AGENTS.md", ActionKind.MERGE)
+        rendered = self.rendered_text(first_artifacts, root_action)
+        self.assertIn("`🚨`", rendered)
+        self.assertIn("`⚠️`", rendered)
+        self.assertIn("do not emit `🔵`", rendered)
+        self.assertTrue(rendered.endswith(project_text))
+
+        result = apply_transaction(first_artifacts / "transaction.json")
+
+        self.assertEqual(result.verification.state, ProjectState.CURRENT)
+        upgraded = (target / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertTrue(upgraded.endswith(project_text))
+        self.assertIn("`🚨`", upgraded)
+        self.assertIn("`⚠️`", upgraded)
+        self.assertEqual(
+            (target / "norn-governance/spec/main-spec.md").read_bytes(),
+            main_spec_before,
+        )
+
     def test_modified_managed_block_requires_explicit_choice(self) -> None:
-        target = self.copy_versioned_project()
+        target = self.copy_previous_template()
         root_path = target / "AGENTS.md"
         customized = (
             "<!-- norn:managed:start core-governance -->\n"
